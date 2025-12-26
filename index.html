@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>XMR Web Miner</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Warning Modal -->
+  <div id="warningModal" class="modal-overlay">
+    <div class="modal-content">
+      <h2>⚠️ Resource Usage Warning</h2>
+      <p>This application performs intensive computation to mine Monero (XMR). This will utilize 100% of your available CPU/GPU power.</p>
+      <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner. You are contributing your computing power.</p>
+      <p>By clicking "Start Mining", you consent to high resource usage.</p>
+      <button id="agreeBtn" class="btn primary">Start Mining</button>
+    </div>
+  </div>
+
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Miner Status</h2>
+      </div>
+      <div class="sidebar-content">
+        <div class="stat-item">
+          <div class="label">Algorithm</div>
+          <div class="value" id="sidebarAlgo" style="color: var(--accent);">RandomX (Web)</div>
+        </div>
+        <div class="stat-item">
+          <div class="label">Hashrate</div>
+          <div class="value" id="sidebarHashrate">0 H/s</div>
+        </div>
+        <div class="stat-item">
+          <div class="label">Total Hashes</div>
+          <div class="value" id="sidebarTotalHashes">0</div>
+        </div>
+        <div class="stat-item">
+          <div class="label">Shares Accepted</div>
+          <div class="value" id="sidebarAccepted">0</div>
+        </div>
+        <div class="stat-item">
+          <div class="label">Uptime</div>
+          <div class="value" id="sidebarUptime">0:00</div>
+        </div>
+        
+        <hr class="divider">
+        
+        <div class="info-section">
+          <p style="font-size: 0.8rem; color: var(--muted);">
+            Connected to Pool via Proxy.
+            <br>Mining to Owner Wallet.
+          </p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="wrap">
+        <header>
+          <h1>Monero Web Miner</h1>
+          <p class="sub">
+            High-performance browser mining.
+            <br>Using WebGPU/WASM acceleration.
+          </p>
+        </header>
+
+        <section class="card">
+          <div class="row">
+            <button id="startBtn" class="btn primary" disabled>Mining...</button>
+            <button id="stopBtn" class="btn" disabled>Stop</button>
+            <div class="spacer"></div>
+            <div class="stat">
+               <div class="k">Status</div>
+               <div class="v" id="status">Waiting for start...</div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="stat">
+              <div class="k">Wallet</div>
+              <div class="v">Owner (Hardcoded)</div>
+            </div>
+            <div class="stat">
+              <div class="k">Pool</div>
+              <div class="v">Configured Proxy</div>
+            </div>
+            <div class="stat">
+              <div class="k">Difficulty</div>
+              <div class="v" id="difficulty">Auto</div>
+            </div>
+          </div>
+          
+          <div class="progress-bar">
+             <div class="bar-fill" id="barFill"></div>
+             <div class="bar-text" id="barText">Initializing...</div>
+          </div>
+        </section>
+
+        
+        <!-- Guide Modal (Hidden by default) -->
+        <div id="guideModal" class="modal-overlay" style="display:none;">
+          <div class="modal-content guide-content">
+            <h3>How to Setup Pool & Wallet</h3>
+            <ol>
+              <li><strong>Get a Wallet:</strong> Download a Monero wallet (e.g., GUI Wallet, Cake Wallet) to get your address (starts with 4 or 8).</li>
+              <li><strong>Choose a Pool:</strong> Find a mining pool that supports WebSocket (or use a proxy like xmrig-proxy). Examples: supportxmr.com, minexmr.com.</li>
+              <li><strong>Enter Details:</strong> Paste your wallet address and the pool's WebSocket URL above.</li>
+              <li><strong>Start:</strong> Click Start to begin mining.</li>
+            </ol>
+            <button id="closeGuideBtn" class="btn">Close</button>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

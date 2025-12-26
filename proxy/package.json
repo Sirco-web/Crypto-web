@@ -1,0 +1,13 @@
+{
+  "name": "monero-web-proxy",
+  "version": "1.0.0",
+  "description": "Simple WebSocket to TCP proxy for browser mining",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@maximegris/node-websockify": "^1.0.7",
+    "ws": "^8.16.0"
+  }
+}

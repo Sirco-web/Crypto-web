@@ -5,15 +5,54 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>XMR Web Miner</title>
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    .engine-banner {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      border: 2px solid var(--accent);
+      border-radius: 12px;
+      padding: 1rem 1.5rem;
+      margin-bottom: 1.5rem;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(110, 231, 255, 0.2);
+    }
+    .engine-banner .label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .engine-banner .engine-name {
+      font-size: 1.5rem;
+      font-weight: bold;
+      color: var(--accent);
+      text-shadow: 0 0 10px rgba(110, 231, 255, 0.5);
+    }
+    .engine-banner.webgpu .engine-name { color: #00ff88; text-shadow: 0 0 10px rgba(0, 255, 136, 0.5); }
+    .engine-banner.wasm .engine-name { color: #6ee7ff; text-shadow: 0 0 10px rgba(110, 231, 255, 0.5); }
+    .engine-banner.js .engine-name { color: #ffaa00; text-shadow: 0 0 10px rgba(255, 170, 0, 0.5); }
+    
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .rejected-count {
+      color: #ff4444;
+      font-size: 0.9rem;
+    }
+  </style>
 </head>
 <body>
   <!-- Warning Modal -->
   <div id="warningModal" class="modal-overlay">
     <div class="modal-content">
       <h2>⚠️ Resource Usage Warning</h2>
-      <p>This application performs intensive computation to mine Monero (XMR). This will utilize 100% of your available CPU/GPU power.</p>
+      <p>This application performs intensive computation to mine Monero (XMR). This will utilize your CPU/GPU power.</p>
       <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner. You are contributing your computing power.</p>
-      <p>By clicking "Start Mining", you consent to high resource usage.</p>
+      <p>By clicking "Start Mining", you consent to resource usage.</p>
       <button id="agreeBtn" class="btn primary">Start Mining</button>
     </div>
   </div>
@@ -26,8 +65,8 @@
       </div>
       <div class="sidebar-content">
         <div class="stat-item">
-          <div class="label">Algorithm</div>
-          <div class="value" id="sidebarAlgo" style="color: var(--accent);">RandomX (Web)</div>
+          <div class="label">Engine</div>
+          <div class="value" id="sidebarAlgo" style="color: var(--accent);">Detecting...</div>
         </div>
         <div class="stat-item">
           <div class="label">Hashrate</div>
@@ -42,6 +81,10 @@
           <div class="value" id="sidebarAccepted">0</div>
         </div>
         <div class="stat-item">
+          <div class="label">Shares Rejected</div>
+          <div class="value" id="sidebarRejected" style="color: #ff4444;">0</div>
+        </div>
+        <div class="stat-item">
           <div class="label">Uptime</div>
           <div class="value" id="sidebarUptime">0:00</div>
         </div>
@@ -50,8 +93,8 @@
         
         <div class="info-section">
           <p style="font-size: 0.8rem; color: var(--muted);">
-            Connected to Pool via Proxy.
-            <br>Mining to Owner Wallet.
+            CryptoNight Algorithm
+            <br>Mining to Owner Wallet
           </p>
         </div>
       </div>
@@ -60,61 +103,52 @@
     <!-- Main Content -->
     <main class="main-content">
       <div class="wrap">
+        <!-- Engine Banner at Top -->
+        <div class="engine-banner" id="engineBanner">
+          <div class="label">Mining Engine</div>
+          <div class="engine-name" id="engineName">Detecting...</div>
+        </div>
+
         <header>
           <h1>Monero Web Miner</h1>
           <p class="sub">
-            High-performance browser mining.
-            <br>Using WebGPU/WASM acceleration.
+            CryptoNight Algorithm
+            <br><span id="engineSub">Detecting best engine...</span>
           </p>
         </header>
 
         <section class="card">
-          <div class="row">
-            <button id="startBtn" class="btn primary" disabled>Mining...</button>
-            <button id="stopBtn" class="btn" disabled>Stop</button>
-            <div class="spacer"></div>
+          <div class="status-row">
+            <div>
+              <button id="startBtn" class="btn primary" disabled>Mining...</button>
+              <button id="stopBtn" class="btn" disabled>Stop</button>
+            </div>
             <div class="stat">
                <div class="k">Status</div>
-               <div class="v" id="status">Waiting for start...</div>
+               <div class="v" id="status">Initializing...</div>
             </div>
           </div>
 
-          <div class="grid">
+          <div class="grid" style="margin-top: 1rem;">
             <div class="stat">
-              <div class="k">Wallet</div>
-              <div class="v">Owner (Hardcoded)</div>
-            </div>
-            <div class="stat">
-              <div class="k">Pool</div>
-              <div class="v">Configured Proxy</div>
+              <div class="k">Job</div>
+              <div class="v" id="currentJob">Waiting...</div>
             </div>
             <div class="stat">
               <div class="k">Difficulty</div>
-              <div class="v" id="difficulty">Auto</div>
+              <div class="v" id="difficulty">--</div>
+            </div>
+            <div class="stat">
+              <div class="k">Pool</div>
+              <div class="v">supportxmr.com</div>
             </div>
           </div>
           
           <div class="progress-bar">
              <div class="bar-fill" id="barFill"></div>
-             <div class="bar-text" id="barText">Initializing...</div>
+             <div class="bar-text" id="barText">Waiting to start...</div>
           </div>
         </section>
-
-        
-        <!-- Guide Modal (Hidden by default) -->
-        <div id="guideModal" class="modal-overlay" style="display:none;">
-          <div class="modal-content guide-content">
-            <h3>How to Setup Pool & Wallet</h3>
-            <ol>
-              <li><strong>Get a Wallet:</strong> Download a Monero wallet (e.g., GUI Wallet, Cake Wallet) to get your address (starts with 4 or 8).</li>
-              <li><strong>Choose a Pool:</strong> Find a mining pool that supports WebSocket (or use a proxy like xmrig-proxy). Examples: supportxmr.com, minexmr.com.</li>
-              <li><strong>Enter Details:</strong> Paste your wallet address and the pool's WebSocket URL above.</li>
-              <li><strong>Start:</strong> Click Start to begin mining.</li>
-            </ol>
-            <button id="closeGuideBtn" class="btn">Close</button>
-          </div>
-        </div>
-
       </div>
     </main>
   </div>

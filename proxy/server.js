@@ -2,86 +2,166 @@ const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
 
-// Configuration
 const WS_PORT = 8888;
 const POOL_HOST = 'pool.supportxmr.com';
 const POOL_PORT = 3333;
+const AUTH_PASS = 'x';
 
-// Create HTTP server for WebSocket upgrade
-const server = http.createServer();
+// Simple HTTP server that just shows info
+const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Content-Type', 'text/html');
+  res.writeHead(200);
+  res.end(`
+<!DOCTYPE html>
+<html>
+<head>
+  <title>XMR Mining Proxy</title>
+  <style>
+    body { font-family: monospace; background: #1a1a2e; color: #6ee7ff; padding: 2rem; }
+    h1 { color: #00ff88; }
+    code { background: #000; padding: 0.5rem 1rem; display: block; margin: 1rem 0; border-radius: 4px; }
+    .info { color: #ffaa00; }
+  </style>
+</head>
+<body>
+  <h1>⛏️ XMR Mining Proxy Server</h1>
+  <p>This is a WebSocket-to-Stratum proxy for browser-based Monero mining.</p>
+  
+  <h2>Connection Info:</h2>
+  <code>WebSocket: ws://localhost:${WS_PORT}</code>
+  
+  <h2>Pool:</h2>
+  <code>${POOL_HOST}:${POOL_PORT}</code>
+  
+  <h2 class="info">⚠️ For the mining interface:</h2>
+  <p>Run the web miner on port 8080:</p>
+  <code>cd /workspaces/Crypto-web && python3 -m http.server 8080</code>
+  <p>Then open: <a href="http://localhost:8080" style="color:#00ff88">http://localhost:8080</a></p>
+  
+  <hr>
+  <p style="color:#666">Proxy Status: ✅ Running</p>
+</body>
+</html>
+  `);
+});
+
 const wss = new WebSocket.Server({ server });
 
 console.log('='.repeat(50));
-console.log('XMR Mining Proxy Server');
+console.log('XMR Mining Proxy');
 console.log('='.repeat(50));
-console.log(`WebSocket: ws://localhost:${WS_PORT}`);
-console.log(`Target Pool: ${POOL_HOST}:${POOL_PORT}`);
+console.log('WebSocket: ws://localhost:' + WS_PORT);
+console.log('Info Page: http://localhost:' + WS_PORT);
+console.log('Pool: ' + POOL_HOST + ':' + POOL_PORT);
 console.log('='.repeat(50));
 
 wss.on('connection', (ws, req) => {
     const clientIP = req.socket.remoteAddress;
-    console.log(`[+] New miner connected from ${clientIP}`);
+    console.log('[+] Miner connected from ' + clientIP);
     
-    // Connect to the real mining pool
     const pool = new net.Socket();
-    let poolConnected = false;
     let buffer = '';
-    
+    let rpcId = 0;
+    let workerId = null;
+    let currentJobId = null;
+
     pool.connect(POOL_PORT, POOL_HOST, () => {
-        console.log(`[+] Connected to pool for ${clientIP}`);
-        poolConnected = true;
+        console.log('[+] Pool connected for ' + clientIP);
     });
-    
-    // Browser -> Pool
+
     ws.on('message', (data) => {
-        if (!poolConnected) {
-            console.log(`[!] Pool not ready, buffering message`);
-            return;
+        try {
+            const msg = JSON.parse(data.toString());
+            console.log('[>] Browser:', msg.type);
+
+            if (msg.type === 'auth') {
+                let login = msg.params.site_key;
+                if (msg.params.user) login += '.' + msg.params.user;
+                rpcId++;
+                pool.write(JSON.stringify({
+                    id: rpcId,
+                    jsonrpc: '2.0',
+                    method: 'login',
+                    params: { login, pass: AUTH_PASS, agent: 'WebMiner/1.0' }
+                }) + '\n');
+            }
+            else if (msg.type === 'submit') {
+                // Only submit if job_id matches current job
+                if (msg.params.job_id !== currentJobId) {
+                    console.log('[!] Stale share, skipping');
+                    return;
+                }
+                rpcId++;
+                pool.write(JSON.stringify({
+                    id: rpcId,
+                    jsonrpc: '2.0',
+                    method: 'submit',
+                    params: {
+                        id: workerId,
+                        job_id: msg.params.job_id,
+                        nonce: msg.params.nonce,
+                        result: msg.params.result
+                    }
+                }) + '\n');
+            }
+        } catch (e) {
+            console.error('[!] Parse error:', e.message);
         }
-        const msg = data.toString();
-        console.log(`[>] Browser -> Pool: ${msg.substring(0, 100)}...`);
-        pool.write(msg);
-        if (!msg.endsWith('\n')) pool.write('\n');
     });
-    
-    // Pool -> Browser
+
     pool.on('data', (data) => {
         buffer += data.toString();
         const lines = buffer.split('\n');
-        buffer = lines.pop(); // Keep incomplete line in buffer
-        
+        buffer = lines.pop();
+
         for (const line of lines) {
-            if (line.trim()) {
-                console.log(`[<] Pool -> Browser: ${line.substring(0, 100)}...`);
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(line);
+            if (!line.trim()) continue;
+            try {
+                const msg = JSON.parse(line);
+                console.log('[<] Pool:', msg.method || (msg.result ? 'result' : 'error'));
+
+                if (msg.result && msg.result.id) {
+                    workerId = msg.result.id;
+                    ws.send(JSON.stringify({ type: 'authed', params: { token: '', hashes: 0 } }));
+                    if (msg.result.job) {
+                        currentJobId = msg.result.job.job_id;
+                        ws.send(JSON.stringify({ type: 'job', params: msg.result.job }));
+                    }
                 }
+                else if (msg.method === 'job') {
+                    currentJobId = msg.params.job_id;
+                    ws.send(JSON.stringify({ type: 'job', params: msg.params }));
+                }
+                else if (msg.result && msg.result.status === 'OK') {
+                    ws.send(JSON.stringify({ type: 'hash_accepted', params: { hashes: 1 } }));
+                }
+                else if (msg.error) {
+                    console.log('[!] Pool error:', msg.error.message);
+                    ws.send(JSON.stringify({ type: 'error', params: { error: msg.error.message } }));
+                }
+            } catch (e) {
+                console.error('[!] Pool parse error:', e.message);
             }
         }
     });
-    
+
     pool.on('error', (err) => {
-        console.error(`[!] Pool error: ${err.message}`);
+        console.error('[!] Pool error:', err.message);
         ws.close();
     });
     
     pool.on('close', () => {
-        console.log(`[-] Pool connection closed for ${clientIP}`);
+        console.log('[-] Pool closed');
         ws.close();
     });
     
     ws.on('close', () => {
-        console.log(`[-] Miner disconnected: ${clientIP}`);
-        pool.destroy();
-    });
-    
-    ws.on('error', (err) => {
-        console.error(`[!] WebSocket error: ${err.message}`);
+        console.log('[-] Miner disconnected');
         pool.destroy();
     });
 });
 
 server.listen(WS_PORT, () => {
-    console.log(`[*] Proxy listening on port ${WS_PORT}`);
-    console.log('[*] Ready for connections...');
+    console.log('[*] Proxy running on port ' + WS_PORT);
 });

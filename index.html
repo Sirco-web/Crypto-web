@@ -6,104 +6,53 @@
   <title>XMR Web Miner</title>
   <link rel="stylesheet" href="styles.css" />
   <style>
-    .engine-banner {
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      border: 2px solid var(--accent);
-      border-radius: 12px;
-      padding: 1rem 1.5rem;
-      margin-bottom: 1.5rem;
-      text-align: center;
-      box-shadow: 0 0 20px rgba(110, 231, 255, 0.2);
-    }
-    .engine-banner .label {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 2px;
-      color: var(--muted);
-      margin-bottom: 0.5rem;
-    }
-    .engine-banner .engine-name {
-      font-size: 1.5rem;
-      font-weight: bold;
-      color: var(--accent);
-      text-shadow: 0 0 10px rgba(110, 231, 255, 0.5);
-    }
-    .engine-banner.webgpu .engine-name { color: #00ff88; text-shadow: 0 0 10px rgba(0, 255, 136, 0.5); }
-    .engine-banner.wasm .engine-name { color: #6ee7ff; text-shadow: 0 0 10px rgba(110, 231, 255, 0.5); }
-    .engine-banner.js .engine-name { color: #ffaa00; text-shadow: 0 0 10px rgba(255, 170, 0, 0.5); }
-    
-    .status-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .rejected-count {
-      color: #ff4444;
-      font-size: 0.9rem;
-    }
+    .engine-banner { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid var(--accent); border-radius: 12px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; text-align: center; box-shadow: 0 0 20px rgba(110, 231, 255, 0.2); }
+    .engine-banner .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 0.5rem; }
+    .engine-banner .engine-name { font-size: 1.5rem; font-weight: bold; color: var(--accent); text-shadow: 0 0 10px rgba(110, 231, 255, 0.5); }
+    .engine-banner.wasm .engine-name { color: #6ee7ff; }
+    .engine-banner.js .engine-name { color: #ffaa00; }
+    .status-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .stat-box { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px; text-align: center; }
+    .stat-box .value { font-size: 1.5rem; font-weight: bold; color: var(--accent); }
+    .stat-box .label { font-size: 0.8rem; color: var(--muted); }
+    .log-container { background: rgba(0,0,0,0.5); border-radius: 8px; padding: 1rem; margin-top: 1rem; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry.info { color: #6ee7ff; }
+    .log-entry.success { color: #00ff88; }
+    .log-entry.warning { color: #ffaa00; }
+    .log-entry.error { color: #ff4444; }
   </style>
 </head>
 <body>
-  <!-- Warning Modal -->
   <div id="warningModal" class="modal-overlay">
     <div class="modal-content">
-      <h2>⚠️ Resource Usage Warning</h2>
-      <p>This application performs intensive computation to mine Monero (XMR). This will utilize your CPU/GPU power.</p>
-      <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner. You are contributing your computing power.</p>
+      <h2>⚠️ Mining Consent</h2>
+      <p>This site uses your CPU to mine Monero (XMR) cryptocurrency.</p>
+      <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner.</p>
       <p>By clicking "Start Mining", you consent to resource usage.</p>
       <button id="agreeBtn" class="btn primary">Start Mining</button>
     </div>
   </div>
 
   <div class="app-container">
-    <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="sidebar-header">
-        <h2>Miner Status</h2>
-      </div>
+      <div class="sidebar-header"><h2>Miner Status</h2></div>
       <div class="sidebar-content">
-        <div class="stat-item">
-          <div class="label">Engine</div>
-          <div class="value" id="sidebarAlgo" style="color: var(--accent);">Detecting...</div>
-        </div>
-        <div class="stat-item">
-          <div class="label">Hashrate</div>
-          <div class="value" id="sidebarHashrate">0 H/s</div>
-        </div>
-        <div class="stat-item">
-          <div class="label">Total Hashes</div>
-          <div class="value" id="sidebarTotalHashes">0</div>
-        </div>
-        <div class="stat-item">
-          <div class="label">Shares Accepted</div>
-          <div class="value" id="sidebarAccepted">0</div>
-        </div>
-        <div class="stat-item">
-          <div class="label">Shares Rejected</div>
-          <div class="value" id="sidebarRejected" style="color: #ff4444;">0</div>
-        </div>
-        <div class="stat-item">
-          <div class="label">Uptime</div>
-          <div class="value" id="sidebarUptime">0:00</div>
-        </div>
-        
+        <div class="stat-item"><div class="label">Engine</div><div class="value" id="sidebarAlgo">Detecting...</div></div>
+        <div class="stat-item"><div class="label">Hashrate</div><div class="value" id="sidebarHashrate">0 H/s</div></div>
+        <div class="stat-item"><div class="label">Total Hashes</div><div class="value" id="sidebarTotalHashes">0</div></div>
+        <div class="stat-item"><div class="label">Accepted</div><div class="value" id="sidebarAccepted" style="color: #00ff88;">0</div></div>
+        <div class="stat-item"><div class="label">Workers</div><div class="value" id="sidebarThreads">0</div></div>
+        <div class="stat-item"><div class="label">Uptime</div><div class="value" id="sidebarUptime">0:00</div></div>
         <hr class="divider">
-        
-        <div class="info-section">
-          <p style="font-size: 0.8rem; color: var(--muted);">
-            CryptoNight Algorithm
-            <br>Mining to Owner Wallet
-          </p>
-        </div>
+        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: SupportXMR<br>⚠️ Demo Mode - Real mining requires WASM CryptoNight</p></div>
       </div>
     </aside>
 
-    <!-- Main Content -->
     <main class="main-content">
       <div class="wrap">
-        <!-- Engine Banner at Top -->
         <div class="engine-banner" id="engineBanner">
           <div class="label">Mining Engine</div>
           <div class="engine-name" id="engineName">Detecting...</div>
@@ -111,47 +60,212 @@
 
         <header>
           <h1>Monero Web Miner</h1>
-          <p class="sub">
-            CryptoNight Algorithm
-            <br><span id="engineSub">Detecting best engine...</span>
-          </p>
+          <p class="sub" id="engineSub">Initializing...</p>
         </header>
 
         <section class="card">
           <div class="status-row">
             <div>
-              <button id="startBtn" class="btn primary" disabled>Mining...</button>
+              <button id="startBtn" class="btn primary" disabled>Loading...</button>
               <button id="stopBtn" class="btn" disabled>Stop</button>
             </div>
             <div class="stat">
                <div class="k">Status</div>
-               <div class="v" id="status">Initializing...</div>
+               <div class="v" id="status">Loading...</div>
             </div>
           </div>
 
-          <div class="grid" style="margin-top: 1rem;">
-            <div class="stat">
-              <div class="k">Job</div>
-              <div class="v" id="currentJob">Waiting...</div>
-            </div>
-            <div class="stat">
-              <div class="k">Difficulty</div>
-              <div class="v" id="difficulty">--</div>
-            </div>
-            <div class="stat">
-              <div class="k">Pool</div>
-              <div class="v">supportxmr.com</div>
-            </div>
+          <div class="stats-grid">
+            <div class="stat-box"><div class="value" id="hashrate">0</div><div class="label">H/s</div></div>
+            <div class="stat-box"><div class="value" id="totalHashes">0</div><div class="label">Total Hashes</div></div>
+            <div class="stat-box"><div class="value" id="acceptedShares">0</div><div class="label">Accepted</div></div>
+            <div class="stat-box"><div class="value" id="threads">0</div><div class="label">Workers</div></div>
           </div>
           
           <div class="progress-bar">
              <div class="bar-fill" id="barFill"></div>
-             <div class="bar-text" id="barText">Waiting to start...</div>
+             <div class="bar-text" id="barText">Ready to mine</div>
+          </div>
+          
+          <div class="log-container" id="logContainer">
+            <div class="log-entry info">Initializing miner...</div>
           </div>
         </section>
       </div>
     </main>
   </div>
-  <script type="module" src="app.js"></script>
+
+  <script>
+    const WALLET = '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL';
+    const WORKER_NAME = 'web_' + Math.random().toString(36).substring(2, 8);
+    
+    // Proxy is on port 8888
+    const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const PROXY_URL = wsProtocol + location.hostname + ':8888';
+    
+    const $ = id => document.getElementById(id);
+    let ws = null, workers = [], currentJob = null;
+    let acceptedShares = 0, hashCount = 0;
+    let startTime = null, statsInterval = null, uptimeInterval = null;
+    let lastHashCount = 0, lastHashTime = Date.now(), currentHashrate = 0;
+    
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + type;
+      entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      $('logContainer').appendChild(entry);
+      $('logContainer').scrollTop = $('logContainer').scrollHeight;
+      while ($('logContainer').children.length > 50) $('logContainer').removeChild($('logContainer').firstChild);
+    }
+    
+    function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+    
+    function fmtUptime(ms) {
+      const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+      return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0') : m + ':' + String(r).padStart(2, '0');
+    }
+    
+    function detectEngine() {
+      if (typeof WebAssembly !== 'undefined') {
+        $('engineName').textContent = 'JavaScript (Demo)';
+        $('sidebarAlgo').textContent = 'JS Demo';
+        $('engineBanner').classList.add('wasm');
+        $('engineSub').textContent = 'Demo mode - connecting to real pool';
+      } else {
+        $('engineName').textContent = 'JavaScript';
+        $('sidebarAlgo').textContent = 'JavaScript';
+        $('engineBanner').classList.add('js');
+        $('engineSub').textContent = 'JavaScript engine';
+      }
+    }
+    
+    function updateStats() {
+      const now = Date.now(), elapsed = (now - lastHashTime) / 1000;
+      if (elapsed >= 1) { currentHashrate = (hashCount - lastHashCount) / elapsed; lastHashCount = hashCount; lastHashTime = now; }
+      $('hashrate').textContent = fmtNum(currentHashrate);
+      $('totalHashes').textContent = fmtNum(hashCount);
+      $('acceptedShares').textContent = fmtNum(acceptedShares);
+      $('threads').textContent = workers.length;
+      $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
+      $('sidebarTotalHashes').textContent = fmtNum(hashCount);
+      $('sidebarAccepted').textContent = fmtNum(acceptedShares);
+      $('sidebarThreads').textContent = workers.length;
+      $('barFill').style.width = ((hashCount % 1000) / 10) + '%';
+      if (currentHashrate > 0) $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
+    }
+    
+    function updateUptime() { if (startTime) $('sidebarUptime').textContent = fmtUptime(Date.now() - startTime); }
+    
+    // Simple demo worker - just counts hashes, doesn't submit fake shares
+    function createWorkerCode() {
+      return `
+        let running = false;
+        let job = null;
+        
+        function mine() {
+          if (!running || !job) return;
+          // Just count hashes without submitting (demo mode)
+          self.postMessage({ type: 'hashcount', count: 100 });
+          if (running) setTimeout(mine, 100);
+        }
+        
+        self.onmessage = function(e) {
+          if (e.data.type === 'job') {
+            job = e.data;
+            if (running) mine();
+          } else if (e.data.type === 'start') {
+            running = true;
+            if (job) mine();
+          } else if (e.data.type === 'stop') {
+            running = false;
+          }
+        };
+      `;
+    }
+    
+    function createWorker() {
+      const blob = new Blob([createWorkerCode()], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = function(e) {
+        if (e.data.type === 'hashcount') hashCount += e.data.count;
+      };
+      return worker;
+    }
+    
+    function connect() {
+      log('Connecting to ' + PROXY_URL, 'info');
+      $('status').textContent = 'Connecting...';
+      $('status').style.color = '#ffaa00';
+      ws = new WebSocket(PROXY_URL);
+      
+      ws.onopen = function() {
+        log('WebSocket connected!', 'success');
+        $('status').textContent = 'Authenticating...';
+        ws.send(JSON.stringify({ type: 'auth', params: { site_key: WALLET, user: WORKER_NAME } }));
+      };
+      
+      ws.onmessage = function(e) {
+        try {
+          const msg = JSON.parse(e.data);
+          log('Received: ' + msg.type, 'info');
+          if (msg.type === 'authed') { 
+            log('Authenticated with pool!', 'success'); 
+            $('status').textContent = 'Waiting for job...'; 
+            $('status').style.color = '#6ee7ff'; 
+          }
+          else if (msg.type === 'job') {
+            currentJob = msg.params;
+            log('Job: ' + currentJob.job_id.substring(0, 8) + '...', 'info');
+            $('status').textContent = 'Mining (demo)!';
+            $('status').style.color = '#00ff88';
+            $('barText').textContent = 'Job: ' + currentJob.job_id.substring(0, 8) + '...';
+            workers.forEach(w => w.postMessage({ type: 'job', job_id: currentJob.job_id, blob: currentJob.blob, target: currentJob.target }));
+          }
+          else if (msg.type === 'hash_accepted') { 
+            acceptedShares++; 
+            log('Share accepted! Total: ' + acceptedShares, 'success'); 
+            $('barText').textContent = 'Accepted! ✓'; 
+          }
+          else if (msg.type === 'error') { 
+            log('Pool: ' + (msg.params?.error || 'Unknown'), 'warning'); 
+          }
+        } catch (err) { log('Parse error', 'error'); }
+      };
+      
+      ws.onerror = function() { log('Connection error', 'error'); $('status').textContent = 'Error'; $('status').style.color = '#ff4444'; };
+      ws.onclose = function() { log('Disconnected. Reconnecting...', 'warning'); $('status').textContent = 'Reconnecting...'; setTimeout(() => { if (workers.length > 0) connect(); }, 3000); };
+    }
+    
+    function startMining() {
+      const numWorkers = navigator.hardwareConcurrency || 4;
+      log('Starting ' + numWorkers + ' workers (demo mode)...', 'info');
+      for (let i = 0; i < numWorkers; i++) { const w = createWorker(); workers.push(w); w.postMessage({ type: 'start' }); }
+      $('threads').textContent = numWorkers;
+      $('sidebarThreads').textContent = numWorkers;
+      startTime = Date.now(); lastHashTime = Date.now(); lastHashCount = 0;
+      connect();
+      statsInterval = setInterval(updateStats, 500);
+      uptimeInterval = setInterval(updateUptime, 1000);
+      $('startBtn').disabled = true; $('startBtn').textContent = 'Mining...'; $('stopBtn').disabled = false;
+    }
+    
+    function stopMining() {
+      log('Stopping...', 'warning');
+      workers.forEach(w => { w.postMessage({ type: 'stop' }); w.terminate(); });
+      workers = [];
+      if (ws) { ws.close(); ws = null; }
+      if (statsInterval) clearInterval(statsInterval);
+      if (uptimeInterval) clearInterval(uptimeInterval);
+      $('startBtn').disabled = false; $('startBtn').textContent = 'Start Mining'; $('stopBtn').disabled = true;
+      $('status').textContent = 'Stopped'; $('status').style.color = '#ff4444';
+    }
+    
+    function init() { detectEngine(); $('startBtn').disabled = false; $('startBtn').textContent = 'Start Mining'; $('status').textContent = 'Ready'; log('Ready! Note: Demo mode - no real shares submitted', 'success'); }
+    
+    $('agreeBtn').addEventListener('click', () => { $('warningModal').style.display = 'none'; startMining(); });
+    $('startBtn').addEventListener('click', startMining);
+    $('stopBtn').addEventListener('click', stopMining);
+    window.addEventListener('load', init);
+  </script>
 </body>
 </html>

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>XMR Web Miner</title>
   <link rel="stylesheet" href="styles.css" />
+  <script src="./miner/miner.min.js"></script>
   <style>
     .engine-banner { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid var(--accent); border-radius: 12px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; text-align: center; box-shadow: 0 0 20px rgba(110, 231, 255, 0.2); }
     .engine-banner .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 0.5rem; }
@@ -47,7 +48,7 @@
         <div class="stat-item"><div class="label">Workers</div><div class="value" id="sidebarThreads">0</div></div>
         <div class="stat-item"><div class="label">Uptime</div><div class="value" id="sidebarUptime">0:00</div></div>
         <hr class="divider">
-        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: SupportXMR<br>⚠️ Demo Mode - Real mining requires WASM CryptoNight</p></div>
+        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: SupportXMR<br>⚡ WASM CryptoNight Active</p></div>
       </div>
     </aside>
 
@@ -97,17 +98,27 @@
 
   <script>
     const WALLET = '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL';
-    const WORKER_NAME = 'web_' + Math.random().toString(36).substring(2, 8);
     
-    // Proxy is on port 8888
+    // Configure CoinHive proxy
     const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const PROXY_URL = wsProtocol + location.hostname + ':8888';
+    let hostname = location.hostname;
+    let proxyUrl = '';
+
+    // Handle Codespaces/Cloud environments where ports are subdomains
+    if (hostname.includes('-8080') && hostname.includes('github.dev')) {
+        hostname = hostname.replace('-8080', '-8888');
+        proxyUrl = wsProtocol + hostname + '/proxy';
+    } else {
+        proxyUrl = wsProtocol + hostname + ':8888/proxy';
+    }
+    
+    // Configure CoinHive library
+    CoinHive.CONFIG.WEBSOCKET_SHARDS = [[proxyUrl]];
+    CoinHive.CONFIG.REQUIRES_AUTH = false;
     
     const $ = id => document.getElementById(id);
-    let ws = null, workers = [], currentJob = null;
-    let acceptedShares = 0, hashCount = 0;
-    let startTime = null, statsInterval = null, uptimeInterval = null;
-    let lastHashCount = 0, lastHashTime = Date.now(), currentHashrate = 0;
+    let miner = null;
+    let startTime = null, uptimeInterval = null, statsInterval = null;
     
     function log(msg, type = 'info') {
       const entry = document.createElement('div');
@@ -125,142 +136,123 @@
       return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0') : m + ':' + String(r).padStart(2, '0');
     }
     
-    function detectEngine() {
-      if (typeof WebAssembly !== 'undefined') {
-        $('engineName').textContent = 'JavaScript (Demo)';
-        $('sidebarAlgo').textContent = 'JS Demo';
-        $('engineBanner').classList.add('wasm');
-        $('engineSub').textContent = 'Demo mode - connecting to real pool';
-      } else {
-        $('engineName').textContent = 'JavaScript';
-        $('sidebarAlgo').textContent = 'JavaScript';
-        $('engineBanner').classList.add('js');
-        $('engineSub').textContent = 'JavaScript engine';
-      }
-    }
-    
-    function updateStats() {
-      const now = Date.now(), elapsed = (now - lastHashTime) / 1000;
-      if (elapsed >= 1) { currentHashrate = (hashCount - lastHashCount) / elapsed; lastHashCount = hashCount; lastHashTime = now; }
-      $('hashrate').textContent = fmtNum(currentHashrate);
-      $('totalHashes').textContent = fmtNum(hashCount);
-      $('acceptedShares').textContent = fmtNum(acceptedShares);
-      $('threads').textContent = workers.length;
-      $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
-      $('sidebarTotalHashes').textContent = fmtNum(hashCount);
-      $('sidebarAccepted').textContent = fmtNum(acceptedShares);
-      $('sidebarThreads').textContent = workers.length;
-      $('barFill').style.width = ((hashCount % 1000) / 10) + '%';
-      if (currentHashrate > 0) $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
-    }
-    
     function updateUptime() { if (startTime) $('sidebarUptime').textContent = fmtUptime(Date.now() - startTime); }
     
-    // Simple demo worker - just counts hashes, doesn't submit fake shares
-    function createWorkerCode() {
-      return `
-        let running = false;
-        let job = null;
-        
-        function mine() {
-          if (!running || !job) return;
-          // Just count hashes without submitting (demo mode)
-          self.postMessage({ type: 'hashcount', count: 100 });
-          if (running) setTimeout(mine, 100);
-        }
-        
-        self.onmessage = function(e) {
-          if (e.data.type === 'job') {
-            job = e.data;
-            if (running) mine();
-          } else if (e.data.type === 'start') {
-            running = true;
-            if (job) mine();
-          } else if (e.data.type === 'stop') {
-            running = false;
-          }
-        };
-      `;
-    }
-    
-    function createWorker() {
-      const blob = new Blob([createWorkerCode()], { type: 'application/javascript' });
-      const worker = new Worker(URL.createObjectURL(blob));
-      worker.onmessage = function(e) {
-        if (e.data.type === 'hashcount') hashCount += e.data.count;
-      };
-      return worker;
-    }
-    
-    function connect() {
-      log('Connecting to ' + PROXY_URL, 'info');
-      $('status').textContent = 'Connecting...';
-      $('status').style.color = '#ffaa00';
-      ws = new WebSocket(PROXY_URL);
-      
-      ws.onopen = function() {
-        log('WebSocket connected!', 'success');
-        $('status').textContent = 'Authenticating...';
-        ws.send(JSON.stringify({ type: 'auth', params: { site_key: WALLET, user: WORKER_NAME } }));
-      };
-      
-      ws.onmessage = function(e) {
-        try {
-          const msg = JSON.parse(e.data);
-          log('Received: ' + msg.type, 'info');
-          if (msg.type === 'authed') { 
-            log('Authenticated with pool!', 'success'); 
-            $('status').textContent = 'Waiting for job...'; 
-            $('status').style.color = '#6ee7ff'; 
-          }
-          else if (msg.type === 'job') {
-            currentJob = msg.params;
-            log('Job: ' + currentJob.job_id.substring(0, 8) + '...', 'info');
-            $('status').textContent = 'Mining (demo)!';
-            $('status').style.color = '#00ff88';
-            $('barText').textContent = 'Job: ' + currentJob.job_id.substring(0, 8) + '...';
-            workers.forEach(w => w.postMessage({ type: 'job', job_id: currentJob.job_id, blob: currentJob.blob, target: currentJob.target }));
-          }
-          else if (msg.type === 'hash_accepted') { 
-            acceptedShares++; 
-            log('Share accepted! Total: ' + acceptedShares, 'success'); 
-            $('barText').textContent = 'Accepted! ✓'; 
-          }
-          else if (msg.type === 'error') { 
-            log('Pool: ' + (msg.params?.error || 'Unknown'), 'warning'); 
-          }
-        } catch (err) { log('Parse error', 'error'); }
-      };
-      
-      ws.onerror = function() { log('Connection error', 'error'); $('status').textContent = 'Error'; $('status').style.color = '#ff4444'; };
-      ws.onclose = function() { log('Disconnected. Reconnecting...', 'warning'); $('status').textContent = 'Reconnecting...'; setTimeout(() => { if (workers.length > 0) connect(); }, 3000); };
+    function detectEngine() {
+      $('engineName').textContent = 'WASM CryptoNight';
+      $('sidebarAlgo').textContent = 'WASM CryptoNight';
+      $('engineBanner').classList.add('wasm');
+      $('engineSub').textContent = 'WebAssembly Mining Engine';
     }
     
     function startMining() {
       const numWorkers = navigator.hardwareConcurrency || 4;
-      log('Starting ' + numWorkers + ' workers (demo mode)...', 'info');
-      for (let i = 0; i < numWorkers; i++) { const w = createWorker(); workers.push(w); w.postMessage({ type: 'start' }); }
+      log('Starting miner with ' + numWorkers + ' threads...', 'info');
+      log('Proxy: ' + proxyUrl, 'info');
+      
+      startTime = Date.now();
+      uptimeInterval = setInterval(updateUptime, 1000);
+      
+      $('startBtn').disabled = true; 
+      $('startBtn').textContent = 'Mining...'; 
+      $('stopBtn').disabled = false;
+      $('status').textContent = 'Connecting...';
+      $('status').style.color = '#ffaa00';
+      
+      // Create CoinHive miner instance
+      miner = new CoinHive.Anonymous(WALLET, {
+        threads: numWorkers,
+        autoThreads: false,
+        throttle: 0.2,
+        forceASMJS: false
+      });
+      
+      // Event handlers
+      miner.on('open', function() {
+        log('Connected to proxy!', 'success');
+        $('status').textContent = 'Connected!';
+        $('status').style.color = '#6ee7ff';
+      });
+      
+      miner.on('authed', function() {
+        log('Authenticated with pool!', 'success');
+        $('status').textContent = 'Mining...';
+        $('status').style.color = '#00ff88';
+      });
+      
+      miner.on('close', function() {
+        log('Connection closed', 'warning');
+      });
+      
+      miner.on('error', function(params) {
+        log('Error: ' + (params.error || 'Unknown'), 'error');
+        $('status').textContent = 'Error';
+        $('status').style.color = '#ff4444';
+      });
+      
+      miner.on('job', function() {
+        log('New job received', 'info');
+      });
+      
+      miner.on('found', function() {
+        log('Share found!', 'info');
+      });
+      
+      miner.on('accepted', function() {
+        log('Share ACCEPTED!', 'success');
+      });
+      
+      // Start mining
+      miner.start();
+      
       $('threads').textContent = numWorkers;
       $('sidebarThreads').textContent = numWorkers;
-      startTime = Date.now(); lastHashTime = Date.now(); lastHashCount = 0;
-      connect();
-      statsInterval = setInterval(updateStats, 500);
-      uptimeInterval = setInterval(updateUptime, 1000);
-      $('startBtn').disabled = true; $('startBtn').textContent = 'Mining...'; $('stopBtn').disabled = false;
+      
+      // Update stats
+      statsInterval = setInterval(function() {
+        if (!miner) return;
+        
+        const hashrate = miner.getHashesPerSecond();
+        const totalHashes = miner.getTotalHashes();
+        const accepted = miner.getAcceptedHashes();
+        
+        $('hashrate').textContent = fmtNum(hashrate);
+        $('sidebarHashrate').textContent = fmtNum(hashrate) + ' H/s';
+        
+        $('totalHashes').textContent = fmtNum(totalHashes);
+        $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
+        
+      if (miner) {
+        miner.stop();
+        miner = null;
+      }
+      if (uptimeInterval) clearInterval(uptimeInterval);
+      if (statsInterval) clearInterval(statsInterval);
+      $('startBtn').disabled = false; 
+      $('startBtn').textContent = 'Start Mining'; 
+      $('stopBtn').disabled = true;
+      $('status').textContent = 'Stopped'; 
+     : ' + fmtNum(hashrate) + ' H/s';
+      }, 1000);
     }
     
     function stopMining() {
       log('Stopping...', 'warning');
       workers.forEach(w => { w.postMessage({ type: 'stop' }); w.terminate(); });
       workers = [];
-      if (ws) { ws.close(); ws = null; }
-      if (statsInterval) clearInterval(statsInterval);
-      if (uptimeInterval) clearInterval(uptimeInterval);
-      $('startBtn').disabled = false; $('startBtn').textContent = 'Start Mining'; $('stopBtn').disabled = true;
-      $('status').textContent = 'Stopped'; $('status').style.color = '#ff4444';
-    }
+      ifdetectEngine();
+        $('startBtn').disabled = false; 
+        $('startBtn').textContent = 'Start Mining'; 
+        $('status').textContent = 'Ready'; 
+        log('WASM CryptoNight miner ready!', 'success'); 
+        log('Proxy configured: ' + proxyUrl, 'info');
     
-    function init() { detectEngine(); $('startBtn').disabled = false; $('startBtn').textContent = 'Start Mining'; $('status').textContent = 'Ready'; log('Ready! Note: Demo mode - no real shares submitted', 'success'); }
+    function init() { 
+        $('startBtn').disabled = false; 
+        $('startBtn').textContent = 'Start Mining'; 
+        $('status').textContent = 'Ready'; 
+        log('Ready to mine!', 'success'); 
+    }
     
     $('agreeBtn').addEventListener('click', () => { $('warningModal').style.display = 'none'; startMining(); });
     $('startBtn').addEventListener('click', startMining);

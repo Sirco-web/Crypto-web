@@ -7,9 +7,23 @@ const POOL_HOST = 'pool.supportxmr.com';
 const POOL_PORT = 3333;
 const AUTH_PASS = 'x';
 
-// Simple HTTP server that just shows info
+let stats = { clients: 0, totalHashes: 0, uptime: Date.now() };
+
+// Simple HTTP server
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  
+  if (req.url === '/stats') {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      clients: stats.clients,
+      total_hashes: stats.totalHashes,
+      uptime: (Date.now() - stats.uptime) / 1000
+    }));
+    return;
+  }
+  
   res.setHeader('Content-Type', 'text/html');
   res.writeHead(200);
   res.end(`
@@ -26,54 +40,68 @@ const server = http.createServer((req, res) => {
 </head>
 <body>
   <h1>⛏️ XMR Mining Proxy Server</h1>
-  <p>This is a WebSocket-to-Stratum proxy for browser-based Monero mining.</p>
+  <p>WebSocket-to-Stratum proxy - CoinHive protocol compatible</p>
   
-  <h2>Connection Info:</h2>
+  <h2>Stats:</h2>
+  <code>Clients: ${stats.clients} | Total Hashes: ${stats.totalHashes}</code>
+  
+  <h2>Connection:</h2>
   <code>WebSocket: ws://localhost:${WS_PORT}</code>
+  <code>Pool: ${POOL_HOST}:${POOL_PORT}</code>
   
-  <h2>Pool:</h2>
-  <code>${POOL_HOST}:${POOL_PORT}</code>
-  
-  <h2 class="info">⚠️ For the mining interface:</h2>
-  <p>Run the web miner on port 8080:</p>
-  <code>cd /workspaces/Crypto-web && python3 -m http.server 8080</code>
-  <p>Then open: <a href="http://localhost:8080" style="color:#00ff88">http://localhost:8080</a></p>
+  <h2 class="info">⚠️ Web Interface:</h2>
+  <p>Mining page runs on port 8080</p>
   
   <hr>
-  <p style="color:#666">Proxy Status: ✅ Running</p>
+  <p style="color:#00ff88">Proxy Status: ✅ Running</p>
 </body>
 </html>
   `);
 });
 
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ noServer: true });
+
+// Handle HTTP upgrade for WebSocket
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  
+  if (pathname === '/proxy' || pathname === '/') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 console.log('='.repeat(50));
 console.log('XMR Mining Proxy');
 console.log('='.repeat(50));
-console.log('WebSocket: ws://localhost:' + WS_PORT);
+console.log('WebSocket: ws://localhost:' + WS_PORT + '/proxy');
 console.log('Info Page: http://localhost:' + WS_PORT);
 console.log('Pool: ' + POOL_HOST + ':' + POOL_PORT);
 console.log('='.repeat(50));
 
 wss.on('connection', (ws, req) => {
     const clientIP = req.socket.remoteAddress;
-    console.log('[+] Miner connected from ' + clientIP);
+    console.log('[+] Client connected from ' + clientIP);
+    stats.clients++;
     
     const pool = new net.Socket();
     let buffer = '';
     let rpcId = 0;
     let workerId = null;
     let currentJobId = null;
+    let hashes = 0;
 
     pool.connect(POOL_PORT, POOL_HOST, () => {
-        console.log('[+] Pool connected for ' + clientIP);
+        console.log('[+] Pool connected for client');
     });
 
     ws.on('message', (data) => {
         try {
             const msg = JSON.parse(data.toString());
-            console.log('[>] Browser:', msg.type);
+            console.log('[>] Client:', msg.type);
 
             if (msg.type === 'auth') {
                 let login = msg.params.site_key;
@@ -83,13 +111,13 @@ wss.on('connection', (ws, req) => {
                     id: rpcId,
                     jsonrpc: '2.0',
                     method: 'login',
-                    params: { login, pass: AUTH_PASS, agent: 'WebMiner/1.0' }
+                    params: { login, pass: AUTH_PASS, agent: 'CoinHive/1.0' }
                 }) + '\n');
             }
             else if (msg.type === 'submit') {
-                // Only submit if job_id matches current job
+                // Validate job_id matches
                 if (msg.params.job_id !== currentJobId) {
-                    console.log('[!] Stale share, skipping');
+                    console.log('[!] Stale share (job mismatch)');
                     return;
                 }
                 rpcId++;
@@ -121,24 +149,47 @@ wss.on('connection', (ws, req) => {
                 const msg = JSON.parse(line);
                 console.log('[<] Pool:', msg.method || (msg.result ? 'result' : 'error'));
 
-                if (msg.result && msg.result.id) {
+                // Login response
+                if (msg.id === 1 && msg.result && msg.result.id) {
                     workerId = msg.result.id;
-                    ws.send(JSON.stringify({ type: 'authed', params: { token: '', hashes: 0 } }));
+                    ws.send(JSON.stringify({ 
+                        type: 'authed', 
+                        params: { token: '', hashes: 0 } 
+                    }));
+                    
                     if (msg.result.job) {
                         currentJobId = msg.result.job.job_id;
-                        ws.send(JSON.stringify({ type: 'job', params: msg.result.job }));
+                        ws.send(JSON.stringify({ 
+                            type: 'job', 
+                            params: msg.result.job 
+                        }));
                     }
                 }
+                // New job
                 else if (msg.method === 'job') {
                     currentJobId = msg.params.job_id;
-                    ws.send(JSON.stringify({ type: 'job', params: msg.params }));
+                    ws.send(JSON.stringify({ 
+                        type: 'job', 
+                        params: msg.params 
+                    }));
                 }
+                // Share accepted
                 else if (msg.result && msg.result.status === 'OK') {
-                    ws.send(JSON.stringify({ type: 'hash_accepted', params: { hashes: 1 } }));
+                    hashes++;
+                    stats.totalHashes++;
+                    ws.send(JSON.stringify({ 
+                        type: 'hash_accepted', 
+                        params: { hashes: hashes } 
+                    }));
+                    console.log('[✓] Share accepted! Total:', hashes);
                 }
+                // Error
                 else if (msg.error) {
-                    console.log('[!] Pool error:', msg.error.message);
-                    ws.send(JSON.stringify({ type: 'error', params: { error: msg.error.message } }));
+                    console.log('[✗] Pool error:', msg.error.message);
+                    ws.send(JSON.stringify({ 
+                        type: 'error', 
+                        params: { error: msg.error.message } 
+                    }));
                 }
             } catch (e) {
                 console.error('[!] Pool parse error:', e.message);
@@ -155,9 +206,15 @@ wss.on('connection', (ws, req) => {
         console.log('[-] Pool closed');
         ws.close();
     });
-    
+
     ws.on('close', () => {
-        console.log('[-] Miner disconnected');
+        console.log('[-] Client disconnected');
+        stats.clients--;
+        pool.destroy();
+    });
+
+    ws.on('error', (err) => {
+        console.error('[!] WebSocket error:', err.message);
         pool.destroy();
     });
 });

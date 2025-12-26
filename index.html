@@ -222,6 +222,16 @@
         $('totalHashes').textContent = fmtNum(totalHashes);
         $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
         
+        $('acceptedShares').textContent = fmtNum(accepted);
+        $('sidebarAccepted').textContent = fmtNum(accepted);
+        
+        $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
+        $('barText').textContent = 'Mining: ' + fmtNum(hashrate) + ' H/s';
+      }, 1000);
+    }
+    
+    function stopMining() {
+      log('Stopping...', 'warning');
       if (miner) {
         miner.stop();
         miner = null;
@@ -232,26 +242,16 @@
       $('startBtn').textContent = 'Start Mining'; 
       $('stopBtn').disabled = true;
       $('status').textContent = 'Stopped'; 
-     : ' + fmtNum(hashrate) + ' H/s';
-      }, 1000);
+      $('status').style.color = '#ff4444';
     }
     
-    function stopMining() {
-      log('Stopping...', 'warning');
-      workers.forEach(w => { w.postMessage({ type: 'stop' }); w.terminate(); });
-      workers = [];
-      ifdetectEngine();
+    function init() { 
+        detectEngine();
         $('startBtn').disabled = false; 
         $('startBtn').textContent = 'Start Mining'; 
         $('status').textContent = 'Ready'; 
         log('WASM CryptoNight miner ready!', 'success'); 
         log('Proxy configured: ' + proxyUrl, 'info');
-    
-    function init() { 
-        $('startBtn').disabled = false; 
-        $('startBtn').textContent = 'Start Mining'; 
-        $('status').textContent = 'Ready'; 
-        log('Ready to mine!', 'success'); 
     }
     
     $('agreeBtn').addEventListener('click', () => { $('warningModal').style.display = 'none'; startMining(); });

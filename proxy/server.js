@@ -3,8 +3,8 @@ const http = require('http');
 const WebSocket = require('ws');
 
 const WS_PORT = 8888;
-const POOL_HOST = 'pool.supportxmr.com';
-const POOL_PORT = 3333;
+const POOL_HOST = 'gulf.moneroocean.stream';  // MoneroOcean - excellent vardiff
+const POOL_PORT = 10128;  // Low diff port for CPU mining
 const AUTH_PASS = 'x';
 
 let stats = { clients: 0, totalHashes: 0, uptime: Date.now() };

@@ -430,14 +430,23 @@ function handlePoolMessage(msg) {
     startMining();
   } else if (msg.type === 'hash_accepted') {
     accepted++;
+    consecutiveRejects = 0;  // Reset reject counter
     postMessage({ type: "accepted", count: accepted });
     postMessage({ type: "status", message: "✅ Share #" + accepted + " accepted!" });
     console.log("[SHARE] ✅ ACCEPTED! Total:", accepted);
   } else if (msg.type === 'error') {
     rejected++;
+    consecutiveRejects++;
     postMessage({ type: "rejected", count: rejected, error: msg.params });
     postMessage({ type: "status", message: "❌ Share rejected: " + msg.params });
     console.error("[SHARE] ❌ REJECTED:", msg.params);
+    
+    // If too many consecutive rejects, something is wrong - reconnect
+    if (consecutiveRejects >= 10) {
+      console.log("[ERROR] Too many rejected shares, reconnecting...");
+      socket.close();
+      consecutiveRejects = 0;
+    }
   }
 }
 
@@ -473,6 +482,7 @@ function submitShare(nonce, result, job_id) {
 let hashCount = 0;
 let lastHashCount = 0;
 let lastTime = 0;
+let consecutiveRejects = 0;  // Track rejected shares
 
 async function startMining() {
   if (!currentJob) return;
@@ -487,13 +497,19 @@ async function startMining() {
   const blob = hexToBytes(jobData.blob);
   const target = jobData.target;
   
-  // Parse target
-  let targetValue = 0n;
-  const targetBytes = hexToBytes(target.padStart(64, '0'));
-  for (let i = 0; i < 8; i++) {
-    targetValue |= BigInt(targetBytes[i]) << BigInt(i * 8);
+  // Parse target - this is the difficulty threshold
+  let targetValue;
+  if (target.length <= 8) {
+    // Short target format - need to expand
+    const targetNum = parseInt(target, 16);
+    const difficulty = 0xFFFFFFFF / targetNum;
+    targetValue = BigInt('0x' + 'f'.repeat(64)) / BigInt(Math.floor(difficulty));
+  } else {
+    // Full 64-char hex target
+    targetValue = BigInt('0x' + target.padStart(64, '0'));
   }
-  if (targetValue === 0n) targetValue = 0xFFFFFFFFFFFFFFFFn;
+  
+  console.log("[MINE] Target value:", targetValue.toString(16).substring(0, 32) + "...");
   
   let nonce = Math.floor(Math.random() * 0x7FFFFFFF);
   
@@ -513,39 +529,46 @@ async function startMining() {
         return; // Exit entire mining function, handlePoolMessage will call startMining again
       }
       
-      // Insert nonce
-      const work = new Uint8Array(blob);
-      work[39] = nonce & 0xFF;
-      work[40] = (nonce >> 8) & 0xFF;
-      work[41] = (nonce >> 16) & 0xFF;
-      work[42] = (nonce >> 24) & 0xFF;
-      
-      // Hash
-      const hash = cryptonightHash(work);
-      hashCount++;
-      
-      // Check target (last 8 bytes, little-endian)
-      let hashValue = 0n;
-      for (let j = 24; j < 32; j++) {
-        hashValue |= BigInt(hash[j]) << BigInt((j - 24) * 8);
-      }
-      
-      if (hashValue < targetValue) {
-        const nonceHex = (nonce >>> 0).toString(16).padStart(8, '0');
-        console.log("[FOUND] ✨ Valid share! Nonce:", nonceHex, "Hash value:", hashValue.toString(16).substring(0, 16));
-        submitShare(nonceHex, bytesToHex(hash), jobData.job_id);
+      try {
+        // Insert nonce
+        const work = new Uint8Array(blob);
+        work[39] = nonce & 0xFF;
+        work[40] = (nonce >> 8) & 0xFF;
+        work[41] = (nonce >> 16) & 0xFF;
+        work[42] = (nonce >> 24) & 0xFF;
+        
+        // Hash
+        const hash = cryptonightHash(work);
+        hashCount++;
+        
+        // Check target - compare FULL hash in reverse (big-endian)
+        // Pool expects the result to be LESS than target when interpreted as big integer
+        const hashHex = bytesToHex(hash);
+        const hashBigInt = BigInt('0x' + hashHex);
+        
+        if (hashBigInt < targetValue) {
+          const nonceHex = (nonce >>> 0).toString(16).padStart(8, '0');
+          console.log("[FOUND] ✨ Valid share! Nonce:", nonceHex);
+          console.log("[FOUND] Hash:", hashHex.substring(0, 32) + "...");
+          console.log("[FOUND] Target:", targetValue.toString(16).substring(0, 32) + "...");
+          submitShare(nonceHex, hashHex, jobData.job_id);
+        }
+      } catch (err) {
+        console.error("[HASH] Error:", err.message);
+        postMessage({ type: "error", message: "Hash error: " + err.message });
+        return; // Stop mining on error
       }
       
       nonce = (nonce + 1) >>> 0;
     }
     
-    // Report progress
+    // Report progress frequently
     const now = performance.now();
-    if (now - lastTime >= 1000) {
+    if (now - lastTime >= 500) {  // Report every 500ms
       const elapsed = (now - lastTime) / 1000;
       const rate = (hashCount - lastHashCount) / elapsed;
       
-      console.log("[HASH] 🔥", rate.toFixed(2), "H/s | Total:", hashCount, "| Job:", currentJob.job_id.substring(0, 8));
+      console.log("[HASH] 🔥", rate.toFixed(2), "H/s | Total:", hashCount, "| Job:", jobData.job_id.substring(0, 8));
       
       postMessage({
         type: "progress",
@@ -559,7 +582,7 @@ async function startMining() {
     }
     
     // Minimal yield for maximum performance
-    if (hashCount % (intensity * 10) === 0) {
+    if (hashCount % (intensity * 5) === 0) {
       await new Promise(r => setTimeout(r, 0));
     }
   }

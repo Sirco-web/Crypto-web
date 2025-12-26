@@ -113,6 +113,8 @@
     const $ = id => document.getElementById(id);
     let workers = [];
     let startTime = null, uptimeInterval = null;
+    let workerStats = {}; // Track stats per worker
+    let totalAccepted = 0;
     
     function log(msg, type = 'info') {
       const entry = document.createElement('div');
@@ -171,18 +173,25 @@
             $('sidebarAlgo').textContent = msg.value;
           }
           else if (msg.type === 'progress') {
-            const hashrate = msg.hashRate || 0;
-            $('hashrate').textContent = fmtNum(hashrate);
-            $('sidebarHashrate').textContent = fmtNum(hashrate) + ' H/s';
-            $('totalHashes').textContent = fmtNum(msg.totalHashes || 0);
-            $('sidebarTotalHashes').textContent = fmtNum(msg.totalHashes || 0);
-            $('barFill').style.width = ((msg.totalHashes % 1000) / 10) + '%';
-            $('barText').textContent = 'Mining: ' + fmtNum(hashrate) + ' H/s';
+            // Track this worker's stats
+            workerStats[i] = { hashRate: msg.hashRate || 0, totalHashes: msg.totalHashes || 0 };
+            
+            // Aggregate across all workers
+            let totalHashRate = 0, totalHashes = 0;
+            Object.values(workerStats).forEach(s => { totalHashRate += s.hashRate; totalHashes += s.totalHashes; });
+            
+            $('hashrate').textContent = fmtNum(totalHashRate);
+            $('sidebarHashrate').textContent = fmtNum(totalHashRate) + ' H/s';
+            $('totalHashes').textContent = fmtNum(totalHashes);
+            $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
+            $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
+            $('barText').textContent = 'Mining: ' + fmtNum(totalHashRate) + ' H/s';
           }
           else if (msg.type === 'accepted') {
-            $('acceptedShares').textContent = msg.count;
-            $('sidebarAccepted').textContent = msg.count;
-            log('Share Accepted! Total: ' + msg.count, 'success');
+            totalAccepted++;
+            $('acceptedShares').textContent = totalAccepted;
+            $('sidebarAccepted').textContent = totalAccepted;
+            log('✅ Share Accepted! Total: ' + totalAccepted, 'success');
           }
           else if (msg.type === 'rejected') {
             log('Share Rejected: ' + (msg.error || 'Unknown'), 'error');
@@ -208,6 +217,8 @@
       log('Stopping...', 'warning');
       workers.forEach(w => { w.postMessage({ type: 'stop' }); w.terminate(); });
       workers = [];
+      workerStats = {};
+      totalAccepted = 0;
       if (uptimeInterval) clearInterval(uptimeInterval);
       $('startBtn').disabled = false; 
       $('startBtn').textContent = 'Start Mining'; 

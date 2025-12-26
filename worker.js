@@ -441,21 +441,27 @@ function handlePoolMessage(msg) {
   }
 }
 
-function submitShare(nonce, result) {
-  if (!socket || socket.readyState !== 1 || !currentJob) return;
+function submitShare(nonce, result, job_id) {
+  if (!socket || socket.readyState !== 1) return;
+  
+  // Verify job still matches before submitting
+  if (currentJob && currentJob.job_id !== job_id) {
+    console.log("[SUBMIT] ❌ Job changed! Not submitting stale share. Expected:", job_id.substring(0, 8), "Current:", currentJob.job_id.substring(0, 8));
+    return;
+  }
   
   // CoinHive protocol submit
   const submit = {
     type: 'submit',
     params: {
-      job_id: currentJob.job_id,
+      job_id: job_id,
       nonce: nonce,
       result: result
     }
   };
   
   socket.send(JSON.stringify(submit));
-  console.log("[SUBMIT] 📤 Nonce:", nonce, "Job:", currentJob.job_id.substring(0, 8), "Hash:", result.substring(0, 16) + "...");
+  console.log("[SUBMIT] 📤 Nonce:", nonce, "Job:", job_id.substring(0, 8), "Hash:", result.substring(0, 16) + "...");
   postMessage({ type: "status", message: "📤 Submitting share..." });
   postMessage({ type: "share" });
 }
@@ -471,8 +477,15 @@ let lastTime = 0;
 async function startMining() {
   if (!currentJob) return;
   
-  const blob = hexToBytes(currentJob.blob);
-  const target = currentJob.target;
+  // Capture job data at start - if currentJob changes, we need to restart
+  const jobData = {
+    job_id: currentJob.job_id,
+    blob: currentJob.blob,
+    target: currentJob.target
+  };
+  
+  const blob = hexToBytes(jobData.blob);
+  const target = jobData.target;
   
   // Parse target
   let targetValue = 0n;
@@ -485,19 +498,19 @@ async function startMining() {
   let nonce = Math.floor(Math.random() * 0x7FFFFFFF);
   
   console.log("[MINE] ⛏️ Starting mining");
-  console.log("[MINE] Job:", currentJob.job_id.substring(0, 12), "Target:", target.substring(0, 16));
+  console.log("[MINE] Job:", jobData.job_id.substring(0, 12), "Target:", target.substring(0, 16));
   console.log("[MINE] Intensity:", intensity, "hashes/batch");
   lastTime = performance.now();
   
-  while (running && currentJob && currentJob.job_id) {
-    const currentJobId = currentJob.job_id;
+  while (running && currentJob && currentJob.job_id === jobData.job_id) {
     
     // Hash batch
     for (let i = 0; i < intensity; i++) {
       // Check if job changed mid-batch
-      if (!running || !currentJob || currentJob.job_id !== currentJobId) {
+      if (!running || !currentJob || currentJob.job_id !== jobData.job_id) {
         console.log("[MINE] ⚠️ Job changed mid-batch, stopping immediately");
-        return; // Exit entire mining function
+        console.log("[MINE] Old:", jobData.job_id.substring(0, 8), "New:", currentJob?.job_id?.substring(0, 8));
+        return; // Exit entire mining function, handlePoolMessage will call startMining again
       }
       
       // Insert nonce
@@ -520,7 +533,7 @@ async function startMining() {
       if (hashValue < targetValue) {
         const nonceHex = (nonce >>> 0).toString(16).padStart(8, '0');
         console.log("[FOUND] ✨ Valid share! Nonce:", nonceHex, "Hash value:", hashValue.toString(16).substring(0, 16));
-        submitShare(nonceHex, bytesToHex(hash));
+        submitShare(nonceHex, bytesToHex(hash), jobData.job_id);
       }
       
       nonce = (nonce + 1) >>> 0;

@@ -409,24 +409,35 @@ function connectToPool() {
 }
 
 function handlePoolMessage(msg) {
-  console.log("Pool:", JSON.stringify(msg).substring(0, 200));
+  console.log("[POOL]", msg.type, JSON.stringify(msg).substring(0, 150));
   
   // CoinHive protocol responses
   if (msg.type === 'authed') {
-    postMessage({ type: "status", message: "Authenticated! Waiting for job..." });
+    postMessage({ type: "status", message: "✓ Authenticated! Waiting for job..." });
+    console.log("[AUTH] Successfully authenticated with pool");
   } else if (msg.type === 'job') {
+    const oldJobId = currentJob?.job_id;
     currentJob = msg.params;
-    postMessage({ type: "status", message: "Mining active!" });
+    if (oldJobId && oldJobId !== currentJob.job_id) {
+      console.log("[JOB] New job received! Old:", oldJobId.substring(0, 8), "→ New:", currentJob.job_id.substring(0, 8));
+      postMessage({ type: "status", message: "🔄 New job: " + currentJob.job_id.substring(0, 12) + "..." });
+    } else {
+      console.log("[JOB] First job received:", currentJob.job_id.substring(0, 12));
+      postMessage({ type: "status", message: "⛏️ Mining job: " + currentJob.job_id.substring(0, 12) + "..." });
+    }
     postMessage({ type: "job", job_id: currentJob.job_id });
+    if (!running) return;
     startMining();
   } else if (msg.type === 'hash_accepted') {
     accepted++;
     postMessage({ type: "accepted", count: accepted });
-    postMessage({ type: "status", message: "Share accepted! ✓" });
+    postMessage({ type: "status", message: "✅ Share #" + accepted + " accepted!" });
+    console.log("[SHARE] ✅ ACCEPTED! Total:", accepted);
   } else if (msg.type === 'error') {
     rejected++;
     postMessage({ type: "rejected", count: rejected, error: msg.params });
-    console.error("Pool error:", msg.params);
+    postMessage({ type: "status", message: "❌ Share rejected: " + msg.params });
+    console.error("[SHARE] ❌ REJECTED:", msg.params);
   }
 }
 
@@ -444,7 +455,8 @@ function submitShare(nonce, result) {
   };
   
   socket.send(JSON.stringify(submit));
-  console.log("Submitted:", nonce, result.substring(0, 16) + "...");
+  console.log("[SUBMIT] 📤 Nonce:", nonce, "Job:", currentJob.job_id.substring(0, 8), "Hash:", result.substring(0, 16) + "...");
+  postMessage({ type: "status", message: "📤 Submitting share..." });
   postMessage({ type: "share" });
 }
 
@@ -472,14 +484,22 @@ async function startMining() {
   
   let nonce = Math.floor(Math.random() * 0x7FFFFFFF);
   
-  console.log("Mining started, target:", target);
+  console.log("[MINE] ⛏️ Starting mining");
+  console.log("[MINE] Job:", currentJob.job_id.substring(0, 12), "Target:", target.substring(0, 16));
+  console.log("[MINE] Intensity:", intensity, "hashes/batch");
   lastTime = performance.now();
   
   while (running && currentJob && currentJob.job_id) {
     const currentJobId = currentJob.job_id;
     
     // Hash batch
-    for (let i = 0; i < intensity && running && currentJob?.job_id === currentJobId; i++) {
+    for (let i = 0; i < intensity; i++) {
+      // Check if job changed mid-batch
+      if (!running || !currentJob || currentJob.job_id !== currentJobId) {
+        console.log("[MINE] ⚠️ Job changed mid-batch, stopping immediately");
+        return; // Exit entire mining function
+      }
+      
       // Insert nonce
       const work = new Uint8Array(blob);
       work[39] = nonce & 0xFF;
@@ -499,6 +519,7 @@ async function startMining() {
       
       if (hashValue < targetValue) {
         const nonceHex = (nonce >>> 0).toString(16).padStart(8, '0');
+        console.log("[FOUND] ✨ Valid share! Nonce:", nonceHex, "Hash value:", hashValue.toString(16).substring(0, 16));
         submitShare(nonceHex, bytesToHex(hash));
       }
       
@@ -511,6 +532,8 @@ async function startMining() {
       const elapsed = (now - lastTime) / 1000;
       const rate = (hashCount - lastHashCount) / elapsed;
       
+      console.log("[HASH] 🔥", rate.toFixed(2), "H/s | Total:", hashCount, "| Job:", currentJob.job_id.substring(0, 8));
+      
       postMessage({
         type: "progress",
         hashRate: rate,
@@ -522,9 +545,12 @@ async function startMining() {
       lastTime = now;
     }
     
-    // Yield
-    await new Promise(r => setTimeout(r, 1));
+    // Minimal yield for maximum performance
+    if (hashCount % (intensity * 10) === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
+  console.log("[MINE] Stopped mining job", currentJobId?.substring(0, 8));
 }
 
 // ============================================================================
@@ -544,6 +570,8 @@ self.onmessage = async (e) => {
     lastTime = performance.now();
     accepted = 0;
     rejected = 0;
+    
+    console.log("[WORKER] 🚀 Starting | Intensity:", intensity, "| Pool:", poolUrl.substring(0, 50));
     
     await initEngine();
     connectToPool();

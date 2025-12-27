@@ -621,4 +621,200 @@ When making changes, verify:
 
 ---
 
-*Last updated: December 27, 2025*
+*Last updated: December 28, 2025*
+
+---
+
+## 🚀 Major Update v3.0.0 (December 28, 2025)
+
+### New Wallet Address
+Updated wallet across all files:
+```
+42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB
+```
+
+Files updated:
+- `config.js`
+- `proxy/server.js`
+- `native-miner/miner.py`
+- `native-miner/linux_miner.sh`
+
+---
+
+### Fix #9: Windows Python Native Miner Complete Rewrite
+
+**File**: `native-miner/miner.py`
+
+**Old Issues**:
+- Basic functionality, no error handling
+- No connection check before mining
+- No CPU temperature monitoring
+- No XMRig auto-download
+- Plain text output
+
+**New Features**:
+- **ASCII Banner UI**: Beautiful terminal banner with version info
+- **Connection Check**: Tests connectivity to MoneroOcean before starting
+- **CPU Temperature Monitoring**: 
+  - Uses WMI (requires admin) or psutil
+  - Throttles at 80°C (reduces to 50% threads)
+  - Stops at 90°C (pauses mining)
+  - Resumes at 70°C
+- **Auto XMRig Download**: Downloads and extracts XMRig 6.21.1 automatically
+- **Colorized Output**: Uses colorama for beautiful colored logging
+- **Full Power Default**: Uses all CPU cores by default
+- **Hashrate Display**: Shows real-time hashrate in terminal
+- **Client Version**: Now reports v3.0.0 to match server
+
+---
+
+### Fix #10: New Linux Miner for ANY Distribution
+
+**File**: `native-miner/linux_miner.sh` (NEW)
+
+**Features**:
+- **Universal Compatibility**: Works on Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, Manjaro, openSUSE, Alpine, and generic Linux
+- **Architecture Detection**: Supports x64 (amd64) and ARM64 (aarch64)
+- **Package Manager Detection**: Auto-uses apt, dnf, yum, pacman, zypper, or apk
+- **Connection Check**: Tests MoneroOcean connectivity before mining
+- **CPU Temperature Monitoring**:
+  - Multiple methods: `sensors`, `/sys/class/thermal`, `/sys/class/hwmon`, `vcgencmd` (Raspberry Pi)
+  - Same throttle/stop thresholds as Windows (80°C/90°C)
+- **Auto XMRig Download**: Downloads correct binary for architecture
+- **Beautiful Terminal UI**: ASCII art banner, colored output
+- **Full Power Default**: Uses all CPU cores
+- **Hashrate Reporting**: Parses XMRig output for live hashrate
+
+**Usage**:
+```bash
+chmod +x linux_miner.sh
+./linux_miner.sh
+```
+
+---
+
+### Fix #11: Activity Log on Dashboard
+
+**File**: `proxy/server.js`
+
+**New Feature**: Dashboard now shows a live activity log with:
+- ✅ Share accepted events
+- ❌ Share rejected events
+- 🎉 Block found events
+- 📌 Server events
+
+**Implementation**:
+- Added `activityLog` array (max 100 entries)
+- Added `addLogEntry(type, message, data)` function
+- Added `/api/activity-log` endpoint
+- Dashboard auto-refreshes log every 3 seconds
+
+---
+
+### Fix #12: Pool Stats from MoneroOcean API
+
+**File**: `proxy/server.js`
+
+**New Feature**: Server fetches wallet stats from MoneroOcean on startup and displays on dashboard:
+- 💰 Balance
+- 💵 Total Paid
+- 📈 Pool Hashrate
+- 🕐 Last Share Time
+
+**Implementation**:
+- Added `fetchPoolStats()` function using MoneroOcean API
+- Added `/api/pool-stats` endpoint
+- Dashboard shows pool stats section with 30-second refresh
+- Stats logged on server startup
+
+---
+
+### Fix #13: Full Power Mining by Default
+
+**File**: `index.html`
+
+**Change**: Web miner now starts at full power (all CPU cores) by default.
+
+```javascript
+// BEFORE:
+let maxPowerEnabled = false;
+
+// AFTER:
+let maxPowerEnabled = true; // Full power by default!
+```
+
+Users can still reduce power via owner panel, but default is maximum hashrate.
+
+---
+
+### Fix #14: Block Found Detection
+
+**File**: `proxy/server.js`
+
+**New Feature**: Server now detects when a block is found by the pool.
+
+```javascript
+// Block found check
+else if (msg.id && msg.result && msg.result.status === 'BLOCK') {
+  globalStats.blocksFound++;
+  console.log(`[Pool] 🎉🎉🎉 BLOCK FOUND! Total: ${globalStats.blocksFound}`);
+  addLogEntry('block_found', `🎉 BLOCK FOUND! Block #${globalStats.blocksFound}`, { 
+    total: globalStats.blocksFound 
+  });
+  broadcastToMiners({ type: 'block_found', params: { blocks: globalStats.blocksFound } });
+}
+```
+
+---
+
+## 📁 Updated File Structure
+
+```
+native-miner/
+├── miner.py              # Windows Python miner (v3.0.0) - REWRITTEN
+├── linux_miner.sh        # Linux universal miner (v3.0.0) - NEW
+├── setup.bat             # Windows XMRig setup
+├── start_miner.bat       # Windows quick start
+├── setup_xmrig.sh        # Linux XMRig setup
+├── start_xmrig.sh        # Linux quick start
+└── README.md             # Documentation
+```
+
+---
+
+## 🌡️ Temperature Monitoring Thresholds
+
+| Temperature | Action |
+|-------------|--------|
+| < 70°C | Full power |
+| 70-79°C | Normal operation |
+| 80-89°C | ⚠️ Throttle to 50% threads |
+| ≥ 90°C | 🛑 Stop mining completely |
+| < 70°C after stop | ▶️ Resume mining |
+
+---
+
+## 🔗 API Endpoints (Updated)
+
+| Endpoint | Description |
+|----------|-------------|
+| `/api/stats` | Mining stats (miners, shares, hashrate) |
+| `/api/activity-log` | Last 100 activity events |
+| `/api/pool-stats` | MoneroOcean wallet stats |
+| `/health` | Server health check |
+| `/stats` | Dashboard HTML |
+| `/owner` | Owner control panel |
+
+---
+
+## 🔧 Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 3.0.0 | 2025-12-28 | New wallet, native miners rewrite, activity log, pool stats, full power default |
+| 2.5.0 | 2025-12-27 | Miner status colors, stopped miner display |
+| 2.4.0 | 2025-12-27 | Consent popup, Vectra miner integration |
+| 2.0.0 | 2025-12-27 | Fixed seed_hash, hashrate reporting |
+| 1.0.0 | 2025-12-27 | Initial proxy server |
+
+---

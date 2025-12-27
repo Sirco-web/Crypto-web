@@ -14,8 +14,77 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '2.5.0';
+const SERVER_VERSION = '3.0.0';
 const VERSION_DATE = '2025-12-27';
+
+// =============================================================================
+// ACTIVITY LOG - Track shares, blocks, events
+// =============================================================================
+const activityLog = [];
+const MAX_LOG_ENTRIES = 100;
+
+function addLogEntry(type, message, extra = {}) {
+  const entry = {
+    time: Date.now(),
+    type,  // 'share_accepted', 'share_rejected', 'block_found', 'miner_connected', 'miner_disconnected', 'pool_event'
+    message,
+    ...extra
+  };
+  activityLog.unshift(entry);
+  if (activityLog.length > MAX_LOG_ENTRIES) {
+    activityLog.pop();
+  }
+  console.log(`[LOG] [${type}] ${message}`);
+}
+
+// =============================================================================
+// POOL STATS - Fetched from MoneroOcean API on startup
+// =============================================================================
+let poolWalletStats = {
+  totalHashes: 0,
+  totalShares: 0,
+  balance: 0,
+  paid: 0,
+  lastFetched: null
+};
+
+async function fetchPoolStats() {
+  const https = require('https');
+  const wallet = CONFIG.pool.wallet;
+  const apiUrl = `https://api.moneroocean.stream/miner/${wallet}/stats`;
+  
+  return new Promise((resolve) => {
+    https.get(apiUrl, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const stats = JSON.parse(data);
+          poolWalletStats = {
+            totalHashes: stats.totalHashes || 0,
+            totalShares: stats.validShares || 0,
+            balance: stats.amtDue || 0,
+            paid: stats.amtPaid || 0,
+            lastFetched: Date.now()
+          };
+          console.log('[Pool API] Wallet stats fetched:', {
+            totalHashes: poolWalletStats.totalHashes,
+            totalShares: poolWalletStats.totalShares,
+            balance: (poolWalletStats.balance / 1e12).toFixed(6) + ' XMR'
+          });
+          addLogEntry('pool_event', 'Pool stats synced from MoneroOcean API');
+          resolve(poolWalletStats);
+        } catch (e) {
+          console.log('[Pool API] Failed to parse stats:', e.message);
+          resolve(null);
+        }
+      });
+    }).on('error', (e) => {
+      console.log('[Pool API] Failed to fetch stats:', e.message);
+      resolve(null);
+    });
+  });
+}
 
 // =============================================================================
 // CONFIGURATION - Edit these or use environment variables!
@@ -34,7 +103,7 @@ const CONFIG = {
   pool: {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
     port: parseInt(process.env.POOL_PORT) || 10001,  // Low diff port by default
-    wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
+    wallet: process.env.WALLET || '42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB',
     workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
     difficulty: 10000,  // Manual difficulty (when auto is off)
     autoMode: true      // Auto-adjust difficulty based on hashrate
@@ -327,13 +396,29 @@ function handlePoolMessage(msg) {
   else if (msg.id && msg.result && msg.result.status === 'OK') {
     globalStats.acceptedShares++;
     console.log(`[Pool] ✅ Share accepted! Total: ${globalStats.acceptedShares}`);
+    addLogEntry('share_accepted', `Share #${globalStats.acceptedShares} accepted by pool`, { 
+      total: globalStats.acceptedShares 
+    });
     // Notify all miners
     broadcastToMiners({ type: 'hash_accepted', params: { hashes: 1 } });
+  }
+  // Block found check
+  else if (msg.id && msg.result && msg.result.status === 'BLOCK') {
+    globalStats.blocksFound++;
+    console.log(`[Pool] 🎉🎉🎉 BLOCK FOUND! Total: ${globalStats.blocksFound}`);
+    addLogEntry('block_found', `🎉 BLOCK FOUND! Block #${globalStats.blocksFound}`, { 
+      total: globalStats.blocksFound 
+    });
+    broadcastToMiners({ type: 'block_found', params: { blocks: globalStats.blocksFound } });
   }
   // Error
   else if (msg.id && msg.error) {
     globalStats.rejectedShares++;
     console.log('[Pool] ❌ Share rejected:', msg.error.message);
+    addLogEntry('share_rejected', `Share rejected: ${msg.error.message}`, { 
+      error: msg.error.message,
+      total: globalStats.rejectedShares 
+    });
     
     // Check for IP suspension
     if (msg.error.message && msg.error.message.includes('temporarily suspended')) {
@@ -612,6 +697,31 @@ const server = http.createServer((req, res) => {
       workerName: CONFIG.pool.workerName,
       autoMode: CONFIG.pool.autoMode
     }));
+    return;
+  }
+  
+  // Activity log endpoint
+  if (pathname === '/api/activity-log') {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      log: activityLog.slice().reverse(),
+      total: activityLog.length
+    }));
+    return;
+  }
+  
+  // Pool stats endpoint - fetch from MoneroOcean
+  if (pathname === '/api/pool-stats') {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const stats = await fetchPoolStats();
+      res.writeHead(200);
+      res.end(JSON.stringify(stats));
+    } catch (e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
   
@@ -2231,10 +2341,37 @@ function generateDashboardHTML() {
       </table>
     </div>
     
+    <div class="card" style="margin-top: 1.5rem;">
+      <h3>📋 Activity Log</h3>
+      <div id="activityLog" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; margin-top: 0.5rem;">
+        ${activityLog.length === 0 ? 
+          '<div style="color: #8b949e; text-align: center; padding: 1rem;">No activity yet - start mining!</div>' :
+          activityLog.slice().reverse().map(entry => {
+            const color = entry.type === 'share_accepted' ? '#3fb950' : 
+                         entry.type === 'block_found' ? '#f7931a' : 
+                         entry.type === 'share_rejected' ? '#f85149' : '#8b949e';
+            const icon = entry.type === 'share_accepted' ? '✅' : 
+                        entry.type === 'block_found' ? '🎉' : 
+                        entry.type === 'share_rejected' ? '❌' : '📌';
+            return \`<div style="padding: 0.3rem 0; border-bottom: 1px solid #30363d; color: \${color};">\${icon} [\${entry.time}] \${entry.message}</div>\`;
+          }).join('')}
+      </div>
+    </div>
+    
+    <div class="card" style="margin-top: 1.5rem; background: linear-gradient(135deg, #1a1a2e 0%, #0f0f1a 100%); border: 2px solid #9d4edd;">
+      <h3>💰 Pool Stats (MoneroOcean)</h3>
+      <div id="poolStatsContent" style="margin-top: 0.5rem;">
+        <p><strong>Balance:</strong> <span id="poolBalance">Loading...</span> XMR</p>
+        <p><strong>Total Paid:</strong> <span id="poolPaid">Loading...</span> XMR</p>
+        <p><strong>Last Share:</strong> <span id="poolLastShare">Loading...</span></p>
+        <p><strong>Pool Hashrate:</strong> <span id="poolHashrate">Loading...</span></p>
+      </div>
+    </div>
+    
     <div class="footer">
       <p><strong>🏷️ Server v${SERVER_VERSION}</strong> (${VERSION_DATE}) | Mode: <span id="modeDisplay">${CONFIG.pool.autoMode ? '🤖 AUTO' : '⚙️ MANUAL'}</span></p>
       <p style="margin-top: 0.3rem;">Server uptime: <span id="uptime">${formatUptime(globalStats.uptime)}</span> | <span id="updateStatus">Live updates active</span></p>
-      <p style="margin-top: 0.5rem;">API: <a href="/api/stats">/api/stats</a> | Health: <a href="/health">/health</a></p>
+      <p style="margin-top: 0.5rem;">API: <a href="/api/stats">/api/stats</a> | Health: <a href="/health">/health</a> | Pool Stats: <a href="/api/pool-stats">/api/pool-stats</a></p>
     </div>
   </div>
   
@@ -2296,8 +2433,64 @@ function generateDashboardHTML() {
     // Update every 2 seconds
     setInterval(updateStats, 2000);
     
-    // Initial update after 1 second
+    // Update activity log every 3 seconds
+    setInterval(updateActivityLog, 3000);
+    
+    // Update pool stats every 30 seconds
+    setInterval(updatePoolStats, 30000);
+    
+    // Initial updates
     setTimeout(updateStats, 1000);
+    setTimeout(updateActivityLog, 1500);
+    setTimeout(updatePoolStats, 2000);
+    
+    // Fetch and update activity log
+    async function updateActivityLog() {
+      try {
+        const res = await fetch('/api/activity-log');
+        const data = await res.json();
+        const logDiv = document.getElementById('activityLog');
+        
+        if (data.log.length === 0) {
+          logDiv.innerHTML = '<div style="color: #8b949e; text-align: center; padding: 1rem;">No activity yet - start mining!</div>';
+        } else {
+          logDiv.innerHTML = data.log.map(function(entry) {
+            var color = entry.type === 'share_accepted' ? '#3fb950' : 
+                       entry.type === 'block_found' ? '#f7931a' : 
+                       entry.type === 'share_rejected' ? '#f85149' : '#8b949e';
+            var icon = entry.type === 'share_accepted' ? '✅' : 
+                      entry.type === 'block_found' ? '🎉' : 
+                      entry.type === 'share_rejected' ? '❌' : '📌';
+            return '<div style="padding: 0.3rem 0; border-bottom: 1px solid #30363d; color: ' + color + ';">' + icon + ' [' + entry.time + '] ' + entry.message + '</div>';
+          }).join('');
+        }
+      } catch (e) {
+        console.error('Activity log update failed:', e);
+      }
+    }
+    
+    // Fetch and update pool stats
+    async function updatePoolStats() {
+      try {
+        const res = await fetch('/api/pool-stats');
+        const data = await res.json();
+        
+        if (data.error) {
+          document.getElementById('poolBalance').textContent = 'Error';
+          document.getElementById('poolPaid').textContent = 'Error';
+          document.getElementById('poolLastShare').textContent = 'Error';
+          document.getElementById('poolHashrate').textContent = 'Error';
+          return;
+        }
+        
+        document.getElementById('poolBalance').textContent = data.balance || '0';
+        document.getElementById('poolPaid').textContent = data.paid || '0';
+        document.getElementById('poolLastShare').textContent = data.lastShare || 'Never';
+        document.getElementById('poolHashrate').textContent = data.hashrate || '0 H/s';
+      } catch (e) {
+        console.error('Pool stats update failed:', e);
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -2334,6 +2527,24 @@ server.listen(CONFIG.port, () => {
   console.log('✨ All miners will be COMBINED into one powerful worker!');
   console.log(`🔄 Difficulty: ${CONFIG.pool.autoMode ? 'Auto-calculated from hashrate' : CONFIG.pool.difficulty}`);
   console.log('');
+  
+  // Fetch pool stats on startup
+  console.log('📊 Fetching pool stats from MoneroOcean...');
+  fetchPoolStats().then(stats => {
+    if (stats.error) {
+      console.log('⚠️  Could not fetch pool stats:', stats.error);
+    } else {
+      console.log('💰 Pool Balance:', stats.balance, 'XMR');
+      console.log('💵 Total Paid:', stats.paid, 'XMR');
+      console.log('📈 Pool Hashrate:', stats.hashrate);
+      console.log('🕐 Last Share:', stats.lastShare);
+      addLogEntry('server_start', `Server started - Balance: ${stats.balance} XMR, Paid: ${stats.paid} XMR`);
+    }
+    console.log('');
+  }).catch(err => {
+    console.log('⚠️  Pool stats fetch failed:', err.message);
+    console.log('');
+  });
   
   // Connect to pool immediately
   connectToPool();

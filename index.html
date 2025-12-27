@@ -170,7 +170,7 @@
     let startTime = null, uptimeInterval = null, statsInterval = null;
     let totalHashes = 0, totalAccepted = 0, currentHashrate = 0;
     let isMining = false;
-    let maxPowerEnabled = false;
+    let maxPowerEnabled = true; // Full power by default!
     
     function log(msg, type = 'info') {
       const entry = document.createElement('div');

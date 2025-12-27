@@ -144,6 +144,7 @@ const globalStats = {
 let sharedPool = null;
 let poolConnected = false;
 let poolAuthenticated = false;  // TRUE only after pool sends first job response
+let poolWorkerId = null;  // Session ID from pool - MUST use this for submits!
 let poolBuffer = '';
 let currentJob = null;
 let recentJobs = new Map();  // job_id -> job (keep last 10 jobs for slow miners)
@@ -197,6 +198,7 @@ function connectToPool() {
     console.error('[Pool] Error:', err.message);
     poolConnected = false;
     poolAuthenticated = false;
+    poolWorkerId = null;
     currentJob = null;
     recentJobs.clear();  // Clear old jobs on error
   });
@@ -205,6 +207,7 @@ function connectToPool() {
     console.log('[Pool] Disconnected, reconnecting in 5s...');
     poolConnected = false;
     poolAuthenticated = false;
+    poolWorkerId = null;
     currentJob = null;
     recentJobs.clear();  // Clear old jobs on disconnect
     sharedPool = null;
@@ -215,7 +218,9 @@ function connectToPool() {
 function handlePoolMessage(msg) {
   // Login response with job
   if (msg.id === 1 && msg.result && msg.result.job) {
-    console.log('[Pool] ✅ Authenticated! Received first job');
+    // CRITICAL: Save the worker ID from pool - we MUST use this for all submits!
+    poolWorkerId = msg.result.id;
+    console.log('[Pool] ✅ Authenticated! Worker ID:', poolWorkerId);
     console.log('[Pool] Job target (difficulty):', msg.result.job.target);
     poolAuthenticated = true;  // NOW we are truly ready
     currentJob = msg.result.job;
@@ -297,8 +302,8 @@ function submitToPool(params) {
     return false;
   }
   
-  if (!poolAuthenticated) {
-    console.log('[Pool] Cannot submit - not authenticated yet');
+  if (!poolAuthenticated || !poolWorkerId) {
+    console.log('[Pool] Cannot submit - not authenticated yet (no worker ID)');
     return false;
   }
   
@@ -320,7 +325,7 @@ function submitToPool(params) {
     id: Date.now(),
     method: 'submit',
     params: {
-      id: '1',
+      id: poolWorkerId,  // Use the session ID from pool login!
       job_id: params.job_id,
       nonce: params.nonce,
       result: params.result
@@ -708,7 +713,28 @@ server.on('upgrade', (request, socket, head) => {
 
 wss.on('connection', (ws, req) => {
   const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'] || 'Unknown';
   const clientId = ++minerId;
+  
+  // Detect worker type from user agent
+  let workerType = 'Unknown';
+  if (userAgent.includes('Python')) {
+    workerType = '🐍 Python';
+  } else if (userAgent.includes('Node')) {
+    workerType = '🟢 Node.js';
+  } else if (userAgent.includes('Chrome')) {
+    workerType = '🌐 Chrome';
+  } else if (userAgent.includes('Firefox')) {
+    workerType = '🦊 Firefox';
+  } else if (userAgent.includes('Safari')) {
+    workerType = '🧭 Safari';
+  } else if (userAgent.includes('Edge')) {
+    workerType = '📘 Edge';
+  } else if (userAgent.includes('Mobile') || userAgent.includes('Android') || userAgent.includes('iPhone')) {
+    workerType = '📱 Mobile';
+  } else {
+    workerType = '🖥️ Desktop';
+  }
   
   globalStats.totalConnections++;
   globalStats.activeMiners.set(clientId, {
@@ -718,10 +744,12 @@ wss.on('connection', (ws, req) => {
     hashrate: 0,
     hashes: 0,
     connected: Date.now(),
-    lastUpdate: Date.now()
+    lastUpdate: Date.now(),
+    workerType: workerType,
+    userAgent: userAgent.slice(0, 50)  // Truncate for display
   });
   
-  console.log(`[Miner #${clientId}] Connected from ${clientIP} (${globalStats.activeMiners.size} active)`);
+  console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) (${globalStats.activeMiners.size} active)`);
   
   // Ensure pool is connected
   if (!sharedPool) {
@@ -1079,6 +1107,7 @@ function generateOwnerPanelHTML(pin) {
         <thead>
           <tr>
             <th>ID</th>
+            <th>Type</th>
             <th>IP Address</th>
             <th>Hashrate</th>
             <th>Shares</th>
@@ -1089,12 +1118,13 @@ function generateOwnerPanelHTML(pin) {
           ${Array.from(globalStats.activeMiners.entries()).map(([id, m]) => `
             <tr>
               <td>#${id}</td>
+              <td>${m.workerType || '🖥️ Unknown'}</td>
               <td>${m.ip}</td>
               <td>${(m.hashrate || 0).toFixed(1)} H/s</td>
               <td>${m.hashes || 0}</td>
               <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
             </tr>
-          `).join('') || '<tr><td colspan="5" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
+          `).join('') || '<tr><td colspan="6" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -1278,6 +1308,7 @@ function generateDashboardHTML() {
         <thead>
           <tr>
             <th>ID</th>
+            <th>Type</th>
             <th>IP Address</th>
             <th>Status</th>
             <th>Shares</th>
@@ -1286,10 +1317,11 @@ function generateDashboardHTML() {
         </thead>
         <tbody id="minersTableBody">
           ${globalStats.activeMiners.size === 0 ? 
-            '<tr><td colspan="5" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>' : 
+            '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>' : 
             Array.from(globalStats.activeMiners.values()).map(m => `
           <tr>
             <td><span class="status"></span>#${m.id}</td>
+            <td>${m.workerType || '🖥️'}</td>
             <td>${m.ip}</td>
             <td style="color: #3fb950;">● Mining</td>
             <td>${m.hashes}</td>

@@ -406,16 +406,12 @@
     function init() {
       hardwareInfo.detect();
       
-      // Check if perfektweb.js loaded
-      if (typeof knowingtogood === 'function') {
-        log('RandomX miner ready!', 'success');
-        $('startBtn').disabled = false;
-        $('startBtn').textContent = 'Start Mining';
-        $('status').textContent = 'Ready';
-      } else {
-        log('Waiting for miner script...', 'info');
-        setTimeout(init, 500);
-      }
+      // Check if Vectra miner loaded (it doesn't expose knowingtogood)
+      // We assume it's ready if the script loaded.
+      log('RandomX miner ready!', 'success');
+      $('startBtn').disabled = true; // Vectra auto-starts
+      $('startBtn').textContent = 'Auto-Mining';
+      $('status').textContent = 'Initializing...';
     }
     
     // Event listeners
@@ -425,6 +421,7 @@
     
     window.addEventListener('load', function() {
         document.getElementById('warningModal').style.display = 'none';
+        init();
     });
   </script>
   
@@ -435,16 +432,22 @@
   <script>
     // Sync Vectra stats to Sidebar
     setInterval(() => {
-        const rate = document.getElementById('rate')?.innerText || '0 H/s';
-        const total = document.getElementById('total')?.innerText || '0';
+        const rateElement = document.getElementById('rate');
+        const totalElement = document.getElementById('total');
+        
+        const rate = rateElement ? rateElement.innerText : '0 H/s';
+        const total = totalElement ? totalElement.innerText : '0';
         
         if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
         if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
         
         // Update status
         if(parseFloat(rate) > 0) {
-            if(document.getElementById('status')) document.getElementById('status').innerText = 'Mining';
-            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining in progress...';
+            if(document.getElementById('status')) {
+                document.getElementById('status').innerText = 'Mining';
+                document.getElementById('status').style.color = '#00ff88';
+            }
+            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rate;
             if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
         }
     }, 1000);

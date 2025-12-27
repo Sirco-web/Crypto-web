@@ -474,14 +474,150 @@ When making changes, verify:
 
 ---
 
-## 📝 Changelog
+## 📝 Complete Changelog
 
-### December 27, 2025
+### v2.5.0 - December 27, 2025
 
-- **Fixed**: `seed_hash` missing from job broadcasts causing worker crash
-- **Fixed**: All 3 job send paths now include complete RandomX job data
-- **Added**: Debug logging for job data verification
-- **Added**: This documentation file
+#### 🎯 Major Fixes
+
+| Commit | Fix | Description |
+|--------|-----|-------------|
+| `14c1e84` | **Stop Button** | Added working stop/start button controls |
+| `581b2f7` | **Hashrate Reporting** | Fixed dashboard showing 0 hashrate/workers |
+| `2819d65` | **seed_hash (Complete)** | Fixed ALL 3 job send paths for RandomX |
+| `5e7fe25` | **seed_hash (Initial)** | Added seed_hash to broadcastJob() |
+| `3525d1f` | **Auth State** | Fixed unauthenticated share submission |
+| `060cd40` | **Dead Connections** | More aggressive cleanup of stale connections |
+
+#### 🚀 Features Added
+
+| Commit | Feature | Description |
+|--------|---------|-------------|
+| `14c1e84` | **Server Commands** | Full support for stop/start/setThreads/kick/refresh |
+| `581b2f7` | **RandomX Migration** | index.html now redirects to miner.html |
+| `41f5175` | **IP Suspension Handler** | 11-minute cooloff when pool suspends IP |
+| `afb028f` | **Version Tracking** | v2.5.0 tracking in server, client, and Python miner |
+| `d1ad5c7` | **Auto/Manual Difficulty** | Smart difficulty mode with auto port selection |
+| `8e2bdde` | **Manage Miner Modal** | Remote thread control, start/stop per miner |
+| `a73f65b` | **Remote Control** | /control WebSocket for owner commands |
+| `2e53bd5` | **Python Native Miner** | Windows/Linux native miner alternative |
+| `7d5e664` | **Enhanced Owner Panel** | Session tokens, rate limiting, more stats |
+| `1ae0038` | **Owner Panel** | PIN auth, wallet display, MoneroOcean link |
+| `bc31d37` | **Stale Share Handling** | Keep last 10 jobs for slightly stale shares |
+
+#### 🔧 Configuration Changes
+
+| Commit | Change | Description |
+|--------|--------|-------------|
+| `21eef18` | **Auto-Difficulty** | Removed fixed difficulty, let pool adjust |
+| `d89a5b3` | **Low Diff Port** | Switched to port 10001 for faster shares |
+| `3ff6593` | **Worker Name** | Changed to 'sirco-sub-pool-miners' |
+| `090f0e5` | **Fixed Difficulty** | Set 10000 for faster finding |
+| `52b81c3` | **Proxy URL** | Hardcoded Koyeb proxy URL |
+| `904ade9` | **WebSocket Path** | Added /proxy path to URL |
+
+#### 🐛 Bug Fixes
+
+| Commit | Fix | Description |
+|--------|-----|-------------|
+| `e89210c` | UI IDs | Fixed miner UI element IDs and uptime counter |
+| `7af3f83` | Init Logic | Fixed Vectra miner initialization |
+| `059dd1a` | GitHub Pages | Configured to ignore backend files |
+| `9d729bd` | Git Submodules | Converted to regular directories |
+| `06369f0` | Error Fix | General error handling |
+| `bf5921c` | Misc Fix | Various fixes |
+
+#### 📚 Documentation
+
+| Commit | Change | Description |
+|--------|--------|-------------|
+| `e66b020` | **FIXES.md** | Created comprehensive developer guide |
+| `e66b020` | **README.md** | Updated with architecture and usage |
+
+---
+
+### December 26, 2025 (Initial Development)
+
+| Commit | Description |
+|--------|-------------|
+| `4145924` | Created CNAME for custom domain |
+| `efff331` | Updated CNAME configuration |
+| `0095326` | Near-complete v2 implementation |
+| `5da6554` | Almost complete implementation |
+| `06d6500` | Various fixes |
+| `13c6b2c` | Started development |
+
+### December 25, 2025
+
+| Commit | Description |
+|--------|-------------|
+| `0833765` | Initial commit - Project started |
+
+---
+
+## 🔍 Quick Reference: All Fix Locations
+
+### proxy/server.js
+
+| Line Range | What | Fix Applied |
+|------------|------|-------------|
+| ~405 | `broadcastJob()` | Added seed_hash, height, algo |
+| ~1331 | Connection handler | Added seed_hash, height, algo |
+| ~1354 | Auth handler | Added seed_hash, height, algo |
+| ~365 | `handleIPSuspension()` | 11-minute cooloff logic |
+| ~500+ | Dashboard routes | Enhanced stats, version info |
+| ~1200+ | WebSocket handlers | Control commands, info tracking |
+
+### miner.html
+
+| Section | What | Fix Applied |
+|---------|------|-------------|
+| Stop button | `onclick` | Calls stopVectraMiner() |
+| Start button | `onclick` | Calls startVectraMiner() |
+| infoSocket | WebSocket | Reports hashrate every 5s |
+| handleRemoteCommand() | Function | Handles all server commands |
+| sessionStorage | State | Remembers stopped state |
+
+### index.html
+
+| Change | Description |
+|--------|-------------|
+| Redirect | Now redirects to miner.html (RandomX) |
+| Old code | Removed 800+ lines of CryptoNight miner |
+
+---
+
+## 🔄 Server ↔ Client Protocol
+
+### Server → Client Messages
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `authed` | `{ hashes }` | Authentication success |
+| `job` | `{ job_id, blob, target, seed_hash, height, algo }` | New mining job |
+| `hash_accepted` | `{ hashes }` | Share accepted |
+| `error` | `{ error }` | Error message |
+| `banned` | `{ banned }` | IP banned |
+| `command` | `{ action, reason?, threads? }` | Control command |
+
+### Client → Server Messages
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `auth` | `{ user? }` | Request authentication |
+| `submit` | `{ job_id, nonce, result }` | Submit share |
+| `info` | `{ cores, threads, hashrate, status, clientVersion }` | Report stats |
+| `identify` | `{ clientVersion }` | Identify as control client |
+
+### Command Actions
+
+| Action | Effect | Triggered By |
+|--------|--------|--------------|
+| `stop` | Stop mining | Owner panel or IP suspension |
+| `start` | Start mining | Owner panel |
+| `setThreads` | Change thread count | Manage miner modal |
+| `kick` | Disconnect | Owner panel |
+| `refresh` | Reload page | Owner panel |
 
 ---
 

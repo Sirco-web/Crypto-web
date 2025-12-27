@@ -8,7 +8,7 @@ class Job {
 
   static CONFIG = {
     WEBSOCKET_SHARDS: [
-      ['wss://respectable-gilemette-timco-f0e524a9.koyeb.app']
+      ['wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy']
     ]
   }
 }

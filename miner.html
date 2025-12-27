@@ -419,15 +419,65 @@
       document.getElementById('warningModal').style.display = 'none';
     };
     
+    // Wire up control buttons
+    document.getElementById('stopBtn').onclick = function() {
+      console.log('[UI] Stop button clicked');
+      if (typeof window.stopMiner === 'function') {
+        window.stopMiner();
+      } else {
+        stopMining();
+      }
+    };
+    
+    document.getElementById('startBtn').onclick = function() {
+      console.log('[UI] Start button clicked');
+      if (typeof window.startMiner === 'function') {
+        window.startMiner();
+      } else {
+        startMining();
+      }
+    };
+    
+    document.getElementById('maxBtn').onclick = function() {
+      console.log('[UI] Max Power button clicked');
+      enableMaxPower();
+    };
+    
     window.addEventListener('load', function() {
         document.getElementById('warningModal').style.display = 'none';
-        init();
+        
+        // Check if user manually stopped mining
+        if (sessionStorage.getItem('minerStopped') === 'true') {
+          log('Mining is stopped (user choice)', 'warning');
+          $('status').textContent = 'Stopped';
+          $('status').style.color = '#ff4444';
+          $('startBtn').disabled = false;
+          $('startBtn').textContent = 'Start Mining';
+          $('stopBtn').disabled = true;
+        } else {
+          init();
+          // Enable stop button after miner loads
+          setTimeout(function() {
+            $('stopBtn').disabled = false;
+          }, 2000);
+        }
     });
   </script>
   
   <!-- Vectra Miner -->
   <div id="hash-charts" style="display:none;"></div>
-  <script defer="defer" src="index.js"></script>
+  <script>
+    // Check stop flag BEFORE loading miner
+    if (sessionStorage.getItem('minerStopped') === 'true') {
+      console.log('[Control] Mining stopped by user, not loading miner');
+    } else {
+      // Dynamically load index.js only if not stopped
+      var script = document.createElement('script');
+      script.src = 'index.js';
+      script.defer = true;
+      document.body.appendChild(script);
+    }
+  </script>
 
   <script>
     // =========================================================================
@@ -454,13 +504,34 @@
         };
         
         infoSocket.onmessage = function(e) {
-          // Handle server commands if needed
+          // Handle all server messages
           try {
             const msg = JSON.parse(e.data);
-            if (msg.type === 'command') {
-              handleRemoteCommand(msg.action || msg.params?.action, msg);
+            console.log('[Server]', msg.type, msg);
+            
+            switch(msg.type) {
+              case 'command':
+                handleRemoteCommand(msg.action || msg.params?.action, msg);
+                break;
+              case 'authed':
+                log('✓ Authenticated with pool', 'success');
+                break;
+              case 'job':
+                log('⛏️ New job received', 'info');
+                break;
+              case 'hash_accepted':
+                log('✅ Share accepted!', 'success');
+                break;
+              case 'error':
+                log('❌ ' + (msg.params?.error || JSON.stringify(msg)), 'error');
+                break;
+              case 'banned':
+                log('🚫 Temporarily banned', 'error');
+                break;
             }
-          } catch(err) {}
+          } catch(err) {
+            console.error('[Info] Parse error:', err);
+          }
         };
         
         infoSocket.onclose = function() {
@@ -488,13 +559,17 @@
       const hashrate = rateEl ? parseFloat(rateEl.innerText) || 0 : 0;
       const threads = threadEl ? parseInt(threadEl.innerText) || 0 : 0;
       
+      // Check if miner is stopped
+      const isStopped = sessionStorage.getItem('minerStopped') === 'true' || 
+                        (typeof isMinerStopped !== 'undefined' && isMinerStopped);
+      
       const info = {
         type: 'info',
         params: {
           cores: navigator.hardwareConcurrency || 4,
           threads: threads,
           throttle: 0,
-          status: hashrate > 0 ? 'mining' : 'stopped',
+          status: isStopped ? 'stopped' : (hashrate > 0 ? 'mining' : 'idle'),
           hashrate: hashrate,
           clientVersion: CLIENT_VERSION
         }
@@ -504,25 +579,144 @@
     }
     
     function handleRemoteCommand(action, msg) {
-      console.log('[Remote] Command:', action);
+      console.log('[Remote] Command:', action, msg);
       
       switch(action) {
         case 'stop':
-          // Stop mining - would need access to the miner object
           console.log('[Remote] Stop command received');
+          stopVectraMiner();
+          if (msg.reason) log('⚠️ ' + msg.reason, 'warning');
           break;
         case 'start':
           console.log('[Remote] Start command received');
+          startVectraMiner();
+          if (msg.reason) log('▶️ ' + msg.reason, 'info');
+          break;
+        case 'setThreads':
+          console.log('[Remote] setThreads command:', msg.threads);
+          setVectraThreads(msg.threads);
           break;
         case 'refresh':
           location.reload();
           break;
         case 'kick':
           if (infoSocket) infoSocket.close();
+          log('🚫 Kicked by owner', 'error');
           console.log('[Remote] Kicked by owner');
           break;
       }
     }
+    
+    // =========================================================================
+    // VECTRA MINER CONTROLS
+    // =========================================================================
+    // The Vectra miner (index.js) creates a miner object internally.
+    // We need to find and control it.
+    
+    let vectraMiner = null;
+    let isMinerStopped = false;
+    
+    function findVectraMiner() {
+      // The miner object should be accessible after index.js loads
+      // Check common global names from the minified bundle
+      if (window.miner) return window.miner;
+      if (window.YX) return window.YX;
+      if (window.wrxMiner) return window.wrxMiner;
+      return null;
+    }
+    
+    function stopVectraMiner() {
+      isMinerStopped = true;
+      
+      // Update UI
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const statusEl = document.getElementById('status');
+      
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Mining';
+      }
+      if (stopBtn) stopBtn.disabled = true;
+      if (statusEl) {
+        statusEl.textContent = 'Stopped';
+        statusEl.style.color = '#ff4444';
+      }
+      
+      log('⏹️ Mining stopped', 'warning');
+      
+      // Try to stop the actual miner
+      const miner = findVectraMiner();
+      if (miner && typeof miner.stop === 'function') {
+        try {
+          miner.stop();
+          console.log('[Control] Vectra miner stopped');
+        } catch (e) {
+          console.error('[Control] Error stopping miner:', e);
+        }
+      } else {
+        // Fallback: reload the page with a flag to not auto-start
+        console.log('[Control] Miner object not found, setting stop flag');
+        sessionStorage.setItem('minerStopped', 'true');
+      }
+    }
+    
+    function startVectraMiner() {
+      isMinerStopped = false;
+      sessionStorage.removeItem('minerStopped');
+      
+      // Update UI
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const statusEl = document.getElementById('status');
+      
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.textContent = 'Mining...';
+      }
+      if (stopBtn) stopBtn.disabled = false;
+      if (statusEl) {
+        statusEl.textContent = 'Starting...';
+        statusEl.style.color = '#ffaa00';
+      }
+      
+      log('▶️ Starting miner...', 'info');
+      
+      // Try to start the actual miner
+      const miner = findVectraMiner();
+      if (miner && typeof miner.start === 'function') {
+        try {
+          miner.start();
+          console.log('[Control] Vectra miner started');
+        } catch (e) {
+          console.error('[Control] Error starting miner:', e);
+          // Fallback: reload page
+          location.reload();
+        }
+      } else {
+        // Fallback: reload to restart
+        console.log('[Control] Miner object not found, reloading...');
+        location.reload();
+      }
+    }
+    
+    function setVectraThreads(numThreads) {
+      const miner = findVectraMiner();
+      if (miner && typeof miner.setNumThreads === 'function') {
+        try {
+          miner.setNumThreads(numThreads);
+          log('🔧 Threads set to ' + numThreads, 'info');
+          console.log('[Control] Set threads to', numThreads);
+        } catch (e) {
+          console.error('[Control] Error setting threads:', e);
+        }
+      }
+    }
+    
+    // Expose miner for debugging and UI controls
+    window.stopMiner = stopVectraMiner;
+    window.startMiner = startVectraMiner;
+    window.setThreads = setVectraThreads;
     
     // Connect after page loads and report info periodically
     window.addEventListener('load', function() {

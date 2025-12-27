@@ -69,6 +69,7 @@ const globalStats = {
 // =============================================================================
 let sharedPool = null;
 let poolConnected = false;
+let poolAuthenticated = false;  // TRUE only after pool sends first job response
 let poolBuffer = '';
 let currentJob = null;
 let minerId = 0;
@@ -81,8 +82,10 @@ function connectToPool() {
   sharedPool = new net.Socket();
   
   sharedPool.connect(CONFIG.pool.port, CONFIG.pool.host, () => {
-    console.log('[Pool] Connected!');
+    console.log('[Pool] TCP Connected, sending login...');
     poolConnected = true;
+    poolAuthenticated = false;  // Not authenticated until we get job response
+    currentJob = null;  // Clear old job on reconnect
     
     // Login with combined worker name
     const loginMsg = {
@@ -117,11 +120,15 @@ function connectToPool() {
   sharedPool.on('error', (err) => {
     console.error('[Pool] Error:', err.message);
     poolConnected = false;
+    poolAuthenticated = false;
+    currentJob = null;
   });
   
   sharedPool.on('close', () => {
     console.log('[Pool] Disconnected, reconnecting in 5s...');
     poolConnected = false;
+    poolAuthenticated = false;
+    currentJob = null;
     sharedPool = null;
     setTimeout(connectToPool, 5000);
   });
@@ -130,8 +137,9 @@ function connectToPool() {
 function handlePoolMessage(msg) {
   // Login response with job
   if (msg.id === 1 && msg.result && msg.result.job) {
-    console.log('[Pool] Authenticated! Received first job');
+    console.log('[Pool] ✅ Authenticated! Received first job');
     console.log('[Pool] Job target (difficulty):', msg.result.job.target);
+    poolAuthenticated = true;  // NOW we are truly ready
     currentJob = msg.result.job;
     broadcastToMiners({ type: 'authed', params: { hashes: 0 } });
     broadcastJob(currentJob);
@@ -407,8 +415,8 @@ wss.on('connection', (ws, req) => {
     }
   }, 20000);
   
-  // Send current job if available
-  if (poolConnected && currentJob) {
+  // Send current job if available (only if AUTHENTICATED, not just connected)
+  if (poolAuthenticated && currentJob) {
     ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
     ws.send(JSON.stringify({
       type: 'job',
@@ -430,8 +438,8 @@ wss.on('connection', (ws, req) => {
       
       if (msg.type === 'auth') {
         console.log(`[Miner #${clientId}] Auth request`);
-        // Pool is shared, just confirm auth if connected
-        if (poolConnected && currentJob) {
+        // Pool is shared, just confirm auth if AUTHENTICATED (not just connected)
+        if (poolAuthenticated && currentJob) {
           ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
           ws.send(JSON.stringify({
             type: 'job',

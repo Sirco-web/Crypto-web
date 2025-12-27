@@ -22,12 +22,14 @@ const CONFIG = {
   ownerPin: process.env.OWNER_PIN || '1234',
   
   // Pool settings
+  // Port 10001 = low difficulty start (good for browser miners)
+  // Port 10128 = high difficulty (128000 start)
   pool: {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
-    port: parseInt(process.env.POOL_PORT) || 10128,
+    port: parseInt(process.env.POOL_PORT) || 10001,  // Low difficulty port
     wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
     workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
-    difficulty: parseInt(process.env.DIFFICULTY) || 128000
+    difficulty: parseInt(process.env.DIFFICULTY) || 10000  // Request fixed 10k difficulty
   },
   
   // Paths

@@ -405,7 +405,12 @@ const server = http.createServer((req, res) => {
         ip: miner.ip,
         hashrate: miner.hashrate,
         hashes: miner.hashes,
-        connected: miner.connected
+        connected: miner.connected,
+        workerType: miner.workerType,
+        cores: miner.cores,
+        threads: miner.threads,
+        throttle: miner.throttle,
+        status: miner.status
       });
     }
     
@@ -659,6 +664,51 @@ const server = http.createServer((req, res) => {
     return;
   }
   
+  // API: Set miner threads
+  if (pathname === '/owner/api/set-threads') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const minerId = parseInt(url.searchParams.get('id'));
+    const threads = parseInt(url.searchParams.get('threads'));
+    
+    if (!minerId || isNaN(threads) || threads < 1 || threads > 64) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Missing id or invalid threads (1-64)' }));
+      return;
+    }
+    
+    const miner = globalStats.activeMiners.get(minerId);
+    if (!miner) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Miner not found' }));
+      return;
+    }
+    
+    // Find control client with matching IP and send command
+    let sent = false;
+    for (const [ws, client] of controlClients) {
+      if (client.ip === miner.ip && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'command', action: 'setThreads', threads }));
+        sent = true;
+        console.log(`[Owner] Set threads to ${threads} for miner #${minerId}`);
+        break;
+      }
+    }
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, threads, minerId, sent }));
+    return;
+  }
+  
   // API: Control ALL miners at once
   if (pathname === '/owner/api/control-all') {
     const token = url.searchParams.get('token');
@@ -726,7 +776,12 @@ const server = http.createServer((req, res) => {
         hashrate: miner.hashrate,
         hashes: miner.hashes,
         connected: miner.connected,
-        lastUpdate: miner.lastUpdate
+        lastUpdate: miner.lastUpdate,
+        workerType: miner.workerType,
+        cores: miner.cores,
+        threads: miner.threads,
+        throttle: miner.throttle,
+        status: miner.status
       });
     }
     
@@ -855,11 +910,27 @@ controlWss.on('connection', (ws, req) => {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
+      const client = controlClients.get(ws);
+      
       if (msg.type === 'identify') {
-        const client = controlClients.get(ws);
         if (client) {
           client.userAgent = msg.userAgent?.slice(0, 80) || client.userAgent;
           console.log(`[Control #${client.id}] Identified: ${client.userAgent}`);
+        }
+      }
+      // Handle info messages - update the matching miner data
+      else if (msg.type === 'info' && msg.params) {
+        // Find miner with matching IP
+        for (const [minerId, miner] of globalStats.activeMiners) {
+          if (miner.ip === clientIP) {
+            if (msg.params.cores) miner.cores = msg.params.cores;
+            if (msg.params.threads !== undefined) miner.threads = msg.params.threads;
+            if (msg.params.throttle !== undefined) miner.throttle = msg.params.throttle;
+            if (msg.params.status) miner.status = msg.params.status;
+            if (msg.params.hashrate !== undefined) miner.hashrate = msg.params.hashrate;
+            miner.lastUpdate = Date.now();
+            break;
+          }
         }
       }
     } catch(e) {
@@ -943,7 +1014,11 @@ wss.on('connection', (ws, req) => {
     connected: Date.now(),
     lastUpdate: Date.now(),
     workerType: workerType,
-    userAgent: userAgent.slice(0, 50)  // Truncate for display
+    userAgent: userAgent.slice(0, 50),  // Truncate for display
+    cores: 0,       // CPU cores (reported by miner)
+    threads: 0,     // Current mining threads
+    throttle: 0,    // Current throttle %
+    status: 'starting'  // starting, mining, stopped
   });
   
   console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) (${globalStats.activeMiners.size} active)`);
@@ -1011,6 +1086,15 @@ wss.on('connection', (ws, req) => {
       else if (msg.type === 'hashrate' && miner) {
         miner.hashrate = msg.params.rate || 0;
         miner.lastUpdate = Date.now();
+      }
+      // Miner info report (cores, threads, status)
+      else if (msg.type === 'info' && miner) {
+        if (msg.params.cores) miner.cores = msg.params.cores;
+        if (msg.params.threads !== undefined) miner.threads = msg.params.threads;
+        if (msg.params.throttle !== undefined) miner.throttle = msg.params.throttle;
+        if (msg.params.status) miner.status = msg.params.status;
+        miner.lastUpdate = Date.now();
+        console.log(`[Miner #${clientId}] Info: ${miner.cores} cores, ${miner.threads} threads, status: ${miner.status}`);
       }
       // Keep-alive ping
       else if (msg.type === 'ping') {
@@ -1314,32 +1398,69 @@ function generateOwnerPanelHTML(pin) {
             <th>ID</th>
             <th>Type</th>
             <th>IP Address</th>
+            <th>Cores</th>
+            <th>Threads</th>
             <th>Hashrate</th>
-            <th>Shares</th>
-            <th>Connected</th>
+            <th>Status</th>
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="minersTableBody">
           ${Array.from(globalStats.activeMiners.entries()).map(([id, m]) => `
             <tr>
               <td>#${id}</td>
-              <td>${m.workerType || '🖥️ Unknown'}</td>
+              <td>${m.workerType || '🖥️'}</td>
               <td>${m.ip}</td>
+              <td>${m.cores || '-'}</td>
+              <td>${m.threads || '-'}</td>
               <td>${(m.hashrate || 0).toFixed(1)} H/s</td>
-              <td>${m.hashes || 0}</td>
-              <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
+              <td style="color: ${m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#8b949e'}">${m.status || 'starting'}</td>
               <td>
-                <button class="btn-sm" onclick="controlMiner(${id},'stop')" title="Stop">⏹️</button>
-                <button class="btn-sm" onclick="controlMiner(${id},'start')" title="Start">▶️</button>
-                <button class="btn-sm" onclick="controlMiner(${id},'refresh')" title="Refresh">🔄</button>
+                <button class="btn-sm" onclick="openManageModal(${id})" title="Manage">⚙️</button>
                 <button class="btn-sm" onclick="controlMiner(${id},'kick')" title="Kick">🚫</button>
               </td>
             </tr>
-          `).join('') || '<tr><td colspan="7" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
+          `).join('') || '<tr><td colspan="8" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
         </tbody>
       </table>
       <div id="controlStatus" class="status"></div>
+    </div>
+    
+    <!-- Manage Miner Modal -->
+    <div id="manageModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:2rem; max-width:500px; width:90%; margin:auto; position:relative;">
+        <button onclick="closeManageModal()" style="position:absolute; top:1rem; right:1rem; background:none; border:none; color:#8b949e; cursor:pointer; font-size:1.5rem;">&times;</button>
+        <h2 style="margin-bottom:1.5rem; color:#6ee7ff;">⚙️ Manage Miner #<span id="modalMinerId">0</span></h2>
+        
+        <div style="background:#21262d; border-radius:8px; padding:1rem; margin-bottom:1rem;">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; font-size:0.9rem;">
+            <div><span style="color:#8b949e;">Type:</span> <span id="modalType">-</span></div>
+            <div><span style="color:#8b949e;">IP:</span> <span id="modalIp">-</span></div>
+            <div><span style="color:#8b949e;">CPU Cores:</span> <span id="modalCores" style="color:#6ee7ff;">-</span></div>
+            <div><span style="color:#8b949e;">Threads:</span> <span id="modalThreads" style="color:#3fb950;">-</span></div>
+            <div><span style="color:#8b949e;">Hashrate:</span> <span id="modalHashrate">-</span></div>
+            <div><span style="color:#8b949e;">Status:</span> <span id="modalStatus">-</span></div>
+          </div>
+        </div>
+        
+        <div style="margin-bottom:1.5rem;">
+          <label style="display:block; color:#8b949e; margin-bottom:0.5rem; font-size:0.85rem;">Set Thread Count (1 - <span id="modalMaxThreads">4</span>):</label>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <input type="range" id="threadSlider" min="1" max="4" value="2" style="flex:1;" onchange="document.getElementById('threadValue').textContent=this.value">
+            <span id="threadValue" style="width:30px; text-align:center; font-weight:bold; color:#6ee7ff;">2</span>
+            <button class="btn btn-primary" onclick="setMinerThreads()">Apply</button>
+          </div>
+        </div>
+        
+        <div style="display:grid; grid-template-columns:repeat(2, 1fr); gap:0.5rem;">
+          <button class="btn btn-secondary" onclick="controlModalMiner('start')">▶️ Start</button>
+          <button class="btn btn-secondary" onclick="controlModalMiner('stop')">⏹️ Stop</button>
+          <button class="btn btn-secondary" onclick="controlModalMiner('refresh')">🔄 Refresh</button>
+          <button class="btn btn-secondary" style="background:#da3633;" onclick="controlModalMiner('kick'); closeManageModal();">🚫 Kick</button>
+        </div>
+        
+        <div id="modalStatus2" class="status" style="margin-top:1rem;"></div>
+      </div>
     </div>
     
     <div class="back">
@@ -1470,8 +1591,129 @@ function generateOwnerPanelHTML(pin) {
       }
     }
     
-    // Auto-refresh stats every 30 seconds
-    setTimeout(() => location.reload(), 30000);
+    // Manage Modal functions
+    let currentMinerData = {};
+    let allMinersData = [];
+    
+    async function loadMinersData() {
+      try {
+        const res = await fetch('/owner/api/stats?token=' + TOKEN);
+        const data = await res.json();
+        allMinersData = data.miners || [];
+        updateMinersTable();
+      } catch(e) {
+        console.error('Failed to load miners:', e);
+      }
+    }
+    
+    function updateMinersTable() {
+      const tbody = document.getElementById('minersTableBody');
+      if (allMinersData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="color:#8b949e;text-align:center;">No miners connected</td></tr>';
+        return;
+      }
+      tbody.innerHTML = allMinersData.map(m => \`
+        <tr>
+          <td>#\${m.id}</td>
+          <td>\${m.workerType || '🖥️'}</td>
+          <td>\${m.ip}</td>
+          <td>\${m.cores || '-'}</td>
+          <td>\${m.threads || '-'}</td>
+          <td>\${(m.hashrate || 0).toFixed(1)} H/s</td>
+          <td style="color: \${m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#8b949e'}">\${m.status || 'starting'}</td>
+          <td>
+            <button class="btn-sm" onclick="openManageModal(\${m.id})" title="Manage">⚙️</button>
+            <button class="btn-sm" onclick="controlMiner(\${m.id},'kick')" title="Kick">🚫</button>
+          </td>
+        </tr>
+      \`).join('');
+    }
+    
+    function openManageModal(id) {
+      const miner = allMinersData.find(m => m.id === id);
+      if (!miner) {
+        alert('Miner not found');
+        return;
+      }
+      currentMinerData = miner;
+      
+      document.getElementById('modalMinerId').textContent = id;
+      document.getElementById('modalType').textContent = miner.workerType || 'Unknown';
+      document.getElementById('modalIp').textContent = miner.ip || '-';
+      document.getElementById('modalCores').textContent = miner.cores || 'Unknown';
+      document.getElementById('modalThreads').textContent = miner.threads || 'Unknown';
+      document.getElementById('modalHashrate').textContent = (miner.hashrate || 0).toFixed(1) + ' H/s';
+      document.getElementById('modalStatus').textContent = miner.status || 'starting';
+      document.getElementById('modalStatus').style.color = miner.status === 'mining' ? '#3fb950' : miner.status === 'stopped' ? '#f85149' : '#8b949e';
+      
+      const maxThreads = miner.cores || 4;
+      document.getElementById('modalMaxThreads').textContent = maxThreads;
+      document.getElementById('threadSlider').max = maxThreads;
+      document.getElementById('threadSlider').value = miner.threads || Math.ceil(maxThreads / 2);
+      document.getElementById('threadValue').textContent = miner.threads || Math.ceil(maxThreads / 2);
+      
+      document.getElementById('manageModal').style.display = 'flex';
+    }
+    
+    function closeManageModal() {
+      document.getElementById('manageModal').style.display = 'none';
+      currentMinerData = {};
+    }
+    
+    async function setMinerThreads() {
+      const threads = parseInt(document.getElementById('threadSlider').value);
+      const id = currentMinerData.id;
+      const status = document.getElementById('modalStatus2');
+      
+      try {
+        const res = await fetch('/owner/api/set-threads?token=' + TOKEN + '&id=' + id + '&threads=' + threads);
+        const data = await res.json();
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ Set ' + threads + ' threads';
+          loadMinersData();
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch(e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    async function controlModalMiner(action) {
+      const id = currentMinerData.id;
+      const status = document.getElementById('modalStatus2');
+      
+      try {
+        const res = await fetch('/owner/api/control-miner?token=' + TOKEN + '&id=' + id + '&action=' + action);
+        const data = await res.json();
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ ' + action.toUpperCase() + ' command sent';
+          loadMinersData();
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch(e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    // Close modal when clicking outside
+    document.getElementById('manageModal').onclick = function(e) {
+      if (e.target === this) closeManageModal();
+    };
+    
+    // Load miners data initially and refresh every 5 seconds
+    loadMinersData();
+    setInterval(loadMinersData, 5000);
+    
+    // Auto-refresh page every 60 seconds
+    setTimeout(() => location.reload(), 60000);
   </script>
 </body>
 </html>`;

@@ -638,6 +638,7 @@
     // =========================================================================
     let controlSocket = null;
     let controlReconnectTimeout = null;
+    let infoReportInterval = null;
     
     function connectControlSocket() {
       // Use same proxy URL but different endpoint
@@ -648,11 +649,15 @@
         
         controlSocket.onopen = function() {
           console.log('[Control] Connected to control channel');
-          // Send identification
+          // Send identification with hardware info
           controlSocket.send(JSON.stringify({
             type: 'identify',
             userAgent: navigator.userAgent
           }));
+          
+          // Start reporting miner info
+          sendMinerInfo();
+          infoReportInterval = setInterval(sendMinerInfo, 5000);
         };
         
         controlSocket.onmessage = function(event) {
@@ -661,7 +666,7 @@
             console.log('[Control] Received:', msg);
             
             if (msg.type === 'command') {
-              handleRemoteCommand(msg.action);
+              handleRemoteCommand(msg.action, msg);
             }
           } catch(e) {
             console.error('[Control] Parse error:', e);
@@ -670,6 +675,7 @@
         
         controlSocket.onclose = function() {
           console.log('[Control] Disconnected, reconnecting in 10s...');
+          if (infoReportInterval) clearInterval(infoReportInterval);
           controlReconnectTimeout = setTimeout(connectControlSocket, 10000);
         };
         
@@ -682,18 +688,38 @@
       }
     }
     
-    function handleRemoteCommand(action) {
+    // Send miner info to server (cores, threads, status)
+    function sendMinerInfo() {
+      if (!controlSocket || controlSocket.readyState !== WebSocket.OPEN) return;
+      
+      const info = {
+        type: 'info',
+        params: {
+          cores: navigator.hardwareConcurrency || 4,
+          threads: miner ? miner.getNumThreads() : 0,
+          throttle: miner ? Math.round(miner.getThrottle() * 100) : 0,
+          status: miner && miner.isRunning() ? 'mining' : 'stopped',
+          hashrate: miner ? miner.getHashesPerSecond() : 0
+        }
+      };
+      
+      controlSocket.send(JSON.stringify(info));
+    }
+    
+    function handleRemoteCommand(action, msg) {
       log('📡 Remote command: ' + action, 'warning');
       
       switch(action) {
         case 'stop':
           stopMining();
+          sendMinerInfo();
           break;
           
         case 'start':
           if (!miner || !miner.isRunning()) {
             safeStartMining();
           }
+          setTimeout(sendMinerInfo, 1000);
           break;
           
         case 'refresh':
@@ -707,7 +733,20 @@
           stopMining();
           if (controlSocket) controlSocket.close();
           if (controlReconnectTimeout) clearTimeout(controlReconnectTimeout);
+          if (infoReportInterval) clearInterval(infoReportInterval);
           log('🚫 Kicked by owner', 'error');
+          break;
+          
+        case 'setThreads':
+          if (msg && msg.threads && miner) {
+            const newThreads = Math.min(Math.max(1, msg.threads), navigator.hardwareConcurrency || 8);
+            miner.setNumThreads(newThreads);
+            autoTune.threads = newThreads;
+            $('threads').textContent = newThreads;
+            $('sidebarThreads').textContent = newThreads;
+            log('🔧 Threads set to ' + newThreads + ' by owner', 'warning');
+            sendMinerInfo();
+          }
           break;
       }
     }

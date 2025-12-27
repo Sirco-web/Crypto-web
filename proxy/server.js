@@ -393,7 +393,11 @@ function broadcastJob(job) {
     params: {
       job_id: job.job_id,
       blob: job.blob,
-      target: job.target
+      target: job.target,
+      // RandomX required fields
+      seed_hash: job.seed_hash,
+      height: job.height,
+      algo: job.algo || 'rx/0'
     }
   };
   broadcastToMiners(msg);

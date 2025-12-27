@@ -1,0 +1,13 @@
+{
+  "miner": {
+    "port": 80
+  },
+  "pool": {
+    "host": "gulf.moneroocean.stream",
+    "port": 10001
+  },
+  "info": {
+    "wallet": "# Monero Wallet Address",
+    "password": "# Monero Wallet Password"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "wrxproxy",
+  "version": "1.0.0",
+  "description": "A WebSocket proxy server for WebRandomX",
+  "main": "index.js",
+  "scripts": {
+    "test": "DEBUG=proxy,pool,miner node ./index.js",
+    "start": "DEBUG=proxy,pool,miner node ./cluster.js",
+    "nolog": "node ./cluster.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WebCryptomining/WRXProxy"
+  },
+  "author": "WebCryptomining",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.3.0"
+  },
+  "devDependencies": {
+    "debug": "^4.3.3",
+    "eslint": "^6.2.0",
+    "eslint-plugin-html": "^6.2.0",
+    "eslint-plugin-vue": "^8.2.0"
+  }
+}

@@ -26,8 +26,8 @@ const CONFIG = {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
     port: parseInt(process.env.POOL_PORT) || 10128,
     wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
-    workerName: process.env.WORKER_NAME || 'CombinedWebMiners',
-    difficulty: parseInt(process.env.DIFFICULTY) || 10000
+    workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
+    difficulty: parseInt(process.env.DIFFICULTY) || 128000
   },
   
   // Paths
@@ -1711,9 +1711,6 @@ function generateOwnerPanelHTML(pin) {
     // Load miners data initially and refresh every 5 seconds
     loadMinersData();
     setInterval(loadMinersData, 5000);
-    
-    // Auto-refresh page every 60 seconds
-    setTimeout(() => location.reload(), 60000);
   </script>
 </body>
 </html>`;
@@ -1852,10 +1849,10 @@ function generateDashboardHTML() {
         // Update miners table
         const tbody = document.getElementById('minersTableBody');
         if (data.miners.list.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
         } else {
           tbody.innerHTML = data.miners.list.map(m => 
-            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + m.ip + '</td><td style="color: #3fb950;">● Mining</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
+            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #3fb950;">● Mining</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
           ).join('');
         }
         

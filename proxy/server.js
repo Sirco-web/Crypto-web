@@ -1336,7 +1336,10 @@ wss.on('connection', (ws, req) => {
       params: {
         job_id: currentJob.job_id,
         blob: currentJob.blob,
-        target: currentJob.target
+        target: currentJob.target,
+        seed_hash: currentJob.seed_hash,
+        height: currentJob.height,
+        algo: currentJob.algo || 'rx/0'
       }
     }));
   }
@@ -1359,7 +1362,10 @@ wss.on('connection', (ws, req) => {
             params: {
               job_id: currentJob.job_id,
               blob: currentJob.blob,
-              target: currentJob.target
+              target: currentJob.target,
+              seed_hash: currentJob.seed_hash,
+              height: currentJob.height,
+              algo: currentJob.algo || 'rx/0'
             }
           }));
         }

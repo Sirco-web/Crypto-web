@@ -35,6 +35,23 @@
     .tune-status .tune-item .val { font-weight: bold; color: var(--accent); }
     .tune-status .tune-item .lbl { color: var(--muted); }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    
+    /* Fix modal button clickability */
+    .modal-overlay { pointer-events: auto; }
+    .modal-content { pointer-events: auto; }
+    .modal-content .btn { 
+      pointer-events: auto; 
+      cursor: pointer; 
+      padding: 15px 30px; 
+      font-size: 1.1rem;
+      margin-top: 1rem;
+      position: relative;
+      z-index: 1001;
+    }
+    .modal-content .btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(110, 231, 255, 0.4);
+    }
   </style>
 </head>
 <body>
@@ -44,7 +61,7 @@
       <p>This site uses your CPU to mine Monero (XMR) cryptocurrency.</p>
       <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner.</p>
       <p>By clicking "Start Mining", you consent to resource usage.</p>
-      <button id="agreeBtn" class="btn primary">Start Mining</button>
+      <button id="agreeBtn" class="btn primary" type="button">Start Mining</button>
     </div>
   </div>
 
@@ -152,29 +169,41 @@
     })();
   </script>
   
+  <!-- Configuration - Edit config.js to change wallet/proxy settings -->
+  <script src="config.js"></script>
+  
   <script>
     // =========================================================================
-    // YOUR WALLET ADDRESS
+    // PROXY URL (uses config.js)
     // =========================================================================
-    const WALLET = '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ';
-    const WORKER_NAME = 'web_miner';
+    const WALLET = CONFIG.WALLET;
+    const WORKER_NAME = CONFIG.WORKER_NAME;
     
-    // =========================================================================
-    // PROXY URL DETECTION
-    // =========================================================================
-    const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    let hostname = location.hostname;
-    let proxyUrl = '';
-
-    if (hostname.includes('-8080') && hostname.includes('github.dev')) {
+    // Auto-detect proxy URL based on current page location
+    function getProxyUrl() {
+      // If explicit URL is set in config, use it
+      if (CONFIG.PROXY_URL && CONFIG.PROXY_URL !== 'auto') {
+        return CONFIG.PROXY_URL;
+      }
+      
+      // Auto-detect based on current location
+      const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      let hostname = location.hostname;
+      
+      // GitHub Codespaces detection
+      if (hostname.includes('-8080') && hostname.includes('github.dev')) {
         hostname = hostname.replace('-8080', '-8892');
-        proxyUrl = wsProtocol + hostname + '/proxy';
-    } else if (hostname.includes('.app.github.dev')) {
+        return wsProtocol + hostname + '/proxy';
+      } else if (hostname.includes('.app.github.dev')) {
         hostname = hostname.replace('-8080.', '-8892.');
-        proxyUrl = wsProtocol + hostname + '/proxy';
-    } else {
-        proxyUrl = wsProtocol + hostname + ':8892/proxy';
+        return wsProtocol + hostname + '/proxy';
+      }
+      
+      // Default: same host, port 8892
+      return wsProtocol + hostname + ':8892/proxy';
     }
+    
+    const proxyUrl = getProxyUrl();
     
     // =========================================================================
     // HELPERS
@@ -448,9 +477,21 @@
         });
         
         miner.on('close', () => {
-          log('Disconnected from proxy', 'warning');
-          $('status').textContent = 'Disconnected';
-          $('status').style.color = '#ff4444';
+          log('Disconnected from proxy - reconnecting in 5s...', 'warning');
+          $('status').textContent = 'Reconnecting...';
+          $('status').style.color = '#ffaa00';
+          
+          // Auto-reconnect after 5 seconds
+          setTimeout(() => {
+            if (miner && !miner.isRunning()) {
+              log('🔄 Attempting to reconnect...', 'info');
+              try {
+                miner.start(CoinHive.FORCE_MULTI_TAB);
+              } catch(e) {
+                log('Reconnect failed: ' + e.message, 'error');
+              }
+            }
+          }, 5000);
         });
         
         miner.on('job', (params) => {
@@ -459,6 +500,16 @@
         
         // Start mining
         miner.start(CoinHive.FORCE_MULTI_TAB);
+        
+        // Create a separate stats reporting socket
+        let statsSocket = null;
+        try {
+          statsSocket = new WebSocket(proxyUrl);
+          statsSocket.onopen = () => console.log('[Stats] Connected to proxy for stats');
+          statsSocket.onerror = (e) => console.log('[Stats] Socket error');
+        } catch(e) {
+          console.log('[Stats] Failed to create stats socket');
+        }
         
         // Stats update loop
         statsInterval = setInterval(() => {
@@ -475,6 +526,16 @@
             $('sidebarThreads').textContent = threads;
             $('barFill').style.width = ((total % 1000) / 10) + '%';
             $('barText').textContent = 'Mining: ' + fmtNum(hashrate) + ' H/s';
+            
+            // Report hashrate to server for dashboard
+            if (statsSocket && statsSocket.readyState === WebSocket.OPEN) {
+              try {
+                statsSocket.send(JSON.stringify({ 
+                  type: 'hashrate', 
+                  params: { rate: hashrate, total: total } 
+                }));
+              } catch(e) {}
+            }
           }
         }, 1000);
         
@@ -571,10 +632,26 @@
       log('Proxy: ' + proxyUrl, 'info');
     }
     
-    $('agreeBtn').addEventListener('click', () => { $('warningModal').style.display = 'none'; startMining(); });
-    $('startBtn').addEventListener('click', startMining);
-    $('stopBtn').addEventListener('click', stopMining);
-    $('maxBtn').addEventListener('click', enableMaxPower);
+    // Safe start function - waits for CoinHive if not ready
+    function safeStartMining() {
+      if (typeof CoinHive === 'undefined') {
+        log('Waiting for miner library to load...', 'info');
+        $('status').textContent = 'Loading...';
+        // Wait and retry
+        setTimeout(safeStartMining, 500);
+        return;
+      }
+      startMining();
+    }
+    
+    // Event listeners - use direct getElementById for reliability
+    document.getElementById('agreeBtn').onclick = function() {
+      document.getElementById('warningModal').style.display = 'none';
+      safeStartMining();
+    };
+    document.getElementById('startBtn').onclick = safeStartMining;
+    document.getElementById('stopBtn').onclick = stopMining;
+    document.getElementById('maxBtn').onclick = enableMaxPower;
     window.addEventListener('load', init);
   </script>
 </body>

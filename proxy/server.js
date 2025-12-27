@@ -1,95 +1,372 @@
+// =============================================================================
+// XMR MINING PROXY SERVER - Production Ready (Render/Koyeb/etc)
+// =============================================================================
+// Combines ALL browser miners into ONE powerful pool worker
+// All connected miners share the same pool connection = combined hashpower!
+// =============================================================================
+
 const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 
-const WS_PORT = 8892;
-const POOL_HOST = 'gulf.moneroocean.stream';  // MoneroOcean - excellent vardiff
-const POOL_PORT = 10128;  // Low diff port for CPU mining
-const AUTH_PASS = 'x';
-
-// Path to lib files (relative to proxy folder)
-const LIB_PATH = path.join(__dirname, '..', 'lib');
-
-let stats = { clients: 0, totalHashes: 0, uptime: Date.now() };
-
-// Simple HTTP server with static file serving for /miner/
-const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+// =============================================================================
+// CONFIGURATION - Edit these or use environment variables!
+// =============================================================================
+const CONFIG = {
+  // Server
+  port: process.env.PORT || 8892,
   
-  // Serve miner files from /miner/ path (CoinHive expects this)
-  if (req.url.startsWith('/miner/')) {
-    const filename = req.url.replace('/miner/', '');
-    const filePath = path.join(LIB_PATH, filename);
+  // Pool settings
+  pool: {
+    host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
+    port: parseInt(process.env.POOL_PORT) || 10128,
+    wallet: process.env.WALLET || '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ',
+    workerName: process.env.WORKER_NAME || 'CombinedWebMiners',
+    password: 'x'
+  },
+  
+  // Paths
+  publicPath: path.join(__dirname, '..'),
+  libPath: path.join(__dirname, '..', 'lib')
+};
+
+// =============================================================================
+// GLOBAL STATS - Combined stats for ALL miners
+// =============================================================================
+const globalStats = {
+  startTime: Date.now(),
+  
+  // Connections
+  totalConnections: 0,
+  activeMiners: new Map(), // id -> { ip, hashrate, hashes, connected }
+  
+  // Mining stats
+  totalHashes: 0,
+  totalShares: 0,
+  acceptedShares: 0,
+  rejectedShares: 0,
+  blocksFound: 0,
+  
+  // Current combined hashrate (calculated from all miners)
+  get combinedHashrate() {
+    let total = 0;
+    for (const miner of this.activeMiners.values()) {
+      total += miner.hashrate || 0;
+    }
+    return total;
+  },
+  
+  // Uptime
+  get uptime() {
+    return Math.floor((Date.now() - this.startTime) / 1000);
+  }
+};
+
+// =============================================================================
+// SHARED POOL CONNECTION - All miners use this single connection
+// =============================================================================
+let sharedPool = null;
+let poolConnected = false;
+let poolBuffer = '';
+let currentJob = null;
+let minerId = 0;
+
+function connectToPool() {
+  if (sharedPool) return;
+  
+  console.log(`[Pool] Connecting to ${CONFIG.pool.host}:${CONFIG.pool.port}...`);
+  
+  sharedPool = new net.Socket();
+  
+  sharedPool.connect(CONFIG.pool.port, CONFIG.pool.host, () => {
+    console.log('[Pool] Connected!');
+    poolConnected = true;
     
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(filename);
-      const contentTypes = {
-        '.js': 'application/javascript',
-        '.wasm': 'application/wasm',
-        '.mem': 'application/octet-stream'
-      };
-      res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
-      res.writeHead(200);
-      fs.createReadStream(filePath).pipe(res);
-      return;
+    // Login with combined worker name
+    const loginMsg = {
+      id: 1,
+      method: 'login',
+      params: {
+        login: CONFIG.pool.wallet,
+        pass: CONFIG.pool.workerName,
+        agent: 'CombinedWebMiner/2.0'
+      }
+    };
+    sharedPool.write(JSON.stringify(loginMsg) + '\n');
+    console.log('[Pool] Sent login for combined worker: ' + CONFIG.pool.workerName);
+  });
+  
+  sharedPool.on('data', (data) => {
+    poolBuffer += data.toString();
+    const lines = poolBuffer.split('\n');
+    poolBuffer = lines.pop();
+    
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        handlePoolMessage(msg);
+      } catch (e) {
+        console.error('[Pool] Parse error:', e.message);
+      }
+    }
+  });
+  
+  sharedPool.on('error', (err) => {
+    console.error('[Pool] Error:', err.message);
+    poolConnected = false;
+  });
+  
+  sharedPool.on('close', () => {
+    console.log('[Pool] Disconnected, reconnecting in 5s...');
+    poolConnected = false;
+    sharedPool = null;
+    setTimeout(connectToPool, 5000);
+  });
+}
+
+function handlePoolMessage(msg) {
+  // Login response with job
+  if (msg.id === 1 && msg.result && msg.result.job) {
+    console.log('[Pool] Authenticated! Received first job');
+    console.log('[Pool] Job target (difficulty):', msg.result.job.target);
+    currentJob = msg.result.job;
+    broadcastToMiners({ type: 'authed', params: { hashes: 0 } });
+    broadcastJob(currentJob);
+  }
+  // New job from pool
+  else if (msg.method === 'job') {
+    console.log('[Pool] New job received, target:', msg.params.target);
+    currentJob = msg.params;
+    broadcastJob(currentJob);
+  }
+  // Share accepted
+  else if (msg.id && msg.result && msg.result.status === 'OK') {
+    globalStats.acceptedShares++;
+    console.log(`[Pool] ✅ Share accepted! Total: ${globalStats.acceptedShares}`);
+    // Notify all miners
+    broadcastToMiners({ type: 'hash_accepted', params: { hashes: 1 } });
+  }
+  // Error
+  else if (msg.id && msg.error) {
+    globalStats.rejectedShares++;
+    console.log('[Pool] ❌ Share rejected:', msg.error.message);
+    broadcastToMiners({ type: 'error', params: { error: msg.error.message } });
+  }
+}
+
+function broadcastJob(job) {
+  if (!job) return;
+  const msg = {
+    type: 'job',
+    params: {
+      job_id: job.job_id,
+      blob: job.blob,
+      target: job.target
+    }
+  };
+  broadcastToMiners(msg);
+}
+
+function broadcastToMiners(msg) {
+  const data = JSON.stringify(msg);
+  for (const [id, miner] of globalStats.activeMiners) {
+    if (miner.ws && miner.ws.readyState === WebSocket.OPEN) {
+      miner.ws.send(data);
     }
   }
+}
+
+function submitToPool(params) {
+  if (!sharedPool || !sharedPool.writable) {
+    console.log('[Pool] Cannot submit - not connected');
+    return false;
+  }
   
-  if (req.url === '/stats') {
+  console.log('[Pool] Submitting share:', JSON.stringify(params));
+  
+  const msg = {
+    id: Date.now(),
+    method: 'submit',
+    params: {
+      id: '1',
+      job_id: params.job_id,
+      nonce: params.nonce,
+      result: params.result
+    }
+  };
+  
+  console.log('[Pool] Submit message:', JSON.stringify(msg));
+  sharedPool.write(JSON.stringify(msg) + '\n');
+  globalStats.totalShares++;
+  return true;
+}
+
+// =============================================================================
+// MIME TYPES
+// =============================================================================
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.json': 'application/json',
+  '.wasm': 'application/wasm',
+  '.mem': 'application/octet-stream',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.svg': 'image/svg+xml'
+};
+
+// =============================================================================
+// CORS MIDDLEWARE
+// =============================================================================
+function setCorsHeaders(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+}
+
+// =============================================================================
+// HTTP SERVER
+// =============================================================================
+const server = http.createServer((req, res) => {
+  setCorsHeaders(res);
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  let pathname = url.pathname;
+  
+  // ==========================================================================
+  // API ENDPOINTS
+  // ==========================================================================
+  
+  // ROOT = Stats Dashboard (port 8892 is the PROXY, not the mining site!)
+  if (pathname === '/' || pathname === '/index.html') {
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    res.end(generateDashboardHTML());
+    return;
+  }
+  
+  // Stats API (JSON)
+  if (pathname === '/api/stats') {
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
+    
+    const miners = [];
+    for (const [id, miner] of globalStats.activeMiners) {
+      miners.push({
+        id,
+        ip: miner.ip,
+        hashrate: miner.hashrate,
+        hashes: miner.hashes,
+        connected: miner.connected
+      });
+    }
+    
     res.end(JSON.stringify({
-      clients: stats.clients,
-      total_hashes: stats.totalHashes,
-      uptime: (Date.now() - stats.uptime) / 1000
+      server: {
+        uptime: globalStats.uptime,
+        uptimeFormatted: formatUptime(globalStats.uptime)
+      },
+      pool: {
+        host: CONFIG.pool.host,
+        connected: poolConnected,
+        wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),
+        workerName: CONFIG.pool.workerName
+      },
+      mining: {
+        combinedHashrate: globalStats.combinedHashrate,
+        totalHashes: globalStats.totalHashes,
+        acceptedShares: globalStats.acceptedShares,
+        rejectedShares: globalStats.rejectedShares,
+        blocksFound: globalStats.blocksFound
+      },
+      miners: {
+        active: globalStats.activeMiners.size,
+        totalConnections: globalStats.totalConnections,
+        list: miners
+      }
     }));
     return;
   }
   
+  // Health check
+  if (pathname === '/health') {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ status: 'ok', uptime: globalStats.uptime }));
+    return;
+  }
+  
+  // Stats Dashboard (HTML)
+  if (pathname === '/stats' || pathname === '/dashboard') {
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    res.end(generateDashboardHTML());
+    return;
+  }
+  
+  // ==========================================================================
+  // STATIC FILES - Only serve /lib/ files for WASM/ASM.js
+  // ==========================================================================
+  
+  // Serve /miner/ files from lib folder (CoinHive compatibility)
+  if (pathname.startsWith('/miner/') || pathname.startsWith('/lib/')) {
+    const fileName = pathname.startsWith('/miner/') ? pathname.slice(7) : pathname.slice(5);
+    const filePath = path.join(CONFIG.libPath, fileName);
+    
+    // Security: prevent directory traversal
+    if (!filePath.startsWith(CONFIG.libPath)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404);
+      res.end('Not Found: ' + pathname);
+      return;
+    }
+    
+    // Get MIME type
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    
+    // Serve file
+    res.setHeader('Content-Type', contentType);
+    res.writeHead(200);
+    fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+  
+  // 404 for anything else
   res.setHeader('Content-Type', 'text/html');
-  res.writeHead(200);
-  res.end(`
-<!DOCTYPE html>
-<html>
-<head>
-  <title>XMR Mining Proxy</title>
-  <style>
-    body { font-family: monospace; background: #1a1a2e; color: #6ee7ff; padding: 2rem; }
-    h1 { color: #00ff88; }
-    code { background: #000; padding: 0.5rem 1rem; display: block; margin: 1rem 0; border-radius: 4px; }
-    .info { color: #ffaa00; }
-  </style>
-</head>
-<body>
-  <h1>⛏️ XMR Mining Proxy Server</h1>
-  <p>WebSocket-to-Stratum proxy - CoinHive protocol compatible</p>
-  
-  <h2>Stats:</h2>
-  <code>Clients: ${stats.clients} | Total Hashes: ${stats.totalHashes}</code>
-  
-  <h2>Connection:</h2>
-  <code>WebSocket: ws://localhost:${WS_PORT}</code>
-  <code>Pool: ${POOL_HOST}:${POOL_PORT}</code>
-  
-  <h2 class="info">⚠️ Web Interface:</h2>
-  <p>Mining page runs on port 8080</p>
-  
-  <hr>
-  <p style="color:#00ff88">Proxy Status: ✅ Running</p>
-</body>
-</html>
-  `);
+  res.writeHead(404);
+  res.end('<h1>404 Not Found</h1><p>This is the mining proxy server. Dashboard: <a href="/">/</a></p>');
 });
 
+// =============================================================================
+// WEBSOCKET SERVER
+// =============================================================================
 const wss = new WebSocket.Server({ noServer: true });
 
-// Handle HTTP upgrade for WebSocket
 server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  const url = new URL(request.url, `http://${request.headers.host}`);
   
-  if (pathname === '/proxy' || pathname === '/') {
+  if (url.pathname === '/proxy' || url.pathname === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
@@ -98,151 +375,324 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
-console.log('='.repeat(50));
-console.log('XMR Mining Proxy');
-console.log('='.repeat(50));
-console.log('WebSocket: ws://localhost:' + WS_PORT + '/proxy');
-console.log('Info Page: http://localhost:' + WS_PORT);
-console.log('Pool: ' + POOL_HOST + ':' + POOL_PORT);
-console.log('='.repeat(50));
-
 wss.on('connection', (ws, req) => {
-    const clientIP = req.socket.remoteAddress;
-    console.log('[+] Client connected from ' + clientIP);
-    stats.clients++;
-    
-    const pool = new net.Socket();
-    let buffer = '';
-    let rpcId = 0;
-    let workerId = null;
-    let currentJobId = null;
-    let hashes = 0;
-
-    pool.connect(POOL_PORT, POOL_HOST, () => {
-        console.log('[+] Pool connected for client');
-    });
-
-    ws.on('message', (data) => {
-        try {
-            const msg = JSON.parse(data.toString());
-            console.log('[>] Client:', msg.type);
-
-            if (msg.type === 'auth') {
-                let login = msg.params.site_key;
-                if (msg.params.user) login += '.' + msg.params.user;
-                rpcId++;
-                pool.write(JSON.stringify({
-                    id: rpcId,
-                    jsonrpc: '2.0',
-                    method: 'login',
-                    params: { login, pass: AUTH_PASS, agent: 'CoinHive/1.0' }
-                }) + '\n');
+  const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  const clientId = ++minerId;
+  
+  globalStats.totalConnections++;
+  globalStats.activeMiners.set(clientId, {
+    id: clientId,
+    ip: clientIP,
+    ws: ws,
+    hashrate: 0,
+    hashes: 0,
+    connected: Date.now(),
+    lastUpdate: Date.now()
+  });
+  
+  console.log(`[Miner #${clientId}] Connected from ${clientIP} (${globalStats.activeMiners.size} active)`);
+  
+  // Ensure pool is connected
+  if (!sharedPool) {
+    connectToPool();
+  }
+  
+  // Send current job if available
+  if (poolConnected && currentJob) {
+    ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
+    ws.send(JSON.stringify({
+      type: 'job',
+      params: {
+        job_id: currentJob.job_id,
+        blob: currentJob.blob,
+        target: currentJob.target
+      }
+    }));
+  }
+  
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      const miner = globalStats.activeMiners.get(clientId);
+      
+      if (msg.type === 'auth') {
+        console.log(`[Miner #${clientId}] Auth request`);
+        // Pool is shared, just confirm auth if connected
+        if (poolConnected && currentJob) {
+          ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
+          ws.send(JSON.stringify({
+            type: 'job',
+            params: {
+              job_id: currentJob.job_id,
+              blob: currentJob.blob,
+              target: currentJob.target
             }
-            else if (msg.type === 'submit') {
-                // Validate job_id matches
-                if (msg.params.job_id !== currentJobId) {
-                    console.log('[!] Stale share (job mismatch)');
-                    return;
-                }
-                rpcId++;
-                pool.write(JSON.stringify({
-                    id: rpcId,
-                    jsonrpc: '2.0',
-                    method: 'submit',
-                    params: {
-                        id: workerId,
-                        job_id: msg.params.job_id,
-                        nonce: msg.params.nonce,
-                        result: msg.params.result
-                    }
-                }) + '\n');
-            }
-        } catch (e) {
-            console.error('[!] Parse error:', e.message);
+          }));
         }
-    });
-
-    pool.on('data', (data) => {
-        buffer += data.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-
-        for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-                const msg = JSON.parse(line);
-                console.log('[<] Pool:', msg.method || (msg.result ? 'result' : 'error'));
-
-                // Login response
-                if (msg.id === 1 && msg.result && msg.result.id) {
-                    workerId = msg.result.id;
-                    ws.send(JSON.stringify({ 
-                        type: 'authed', 
-                        params: { token: '', hashes: 0 } 
-                    }));
-                    
-                    if (msg.result.job) {
-                        currentJobId = msg.result.job.job_id;
-                        ws.send(JSON.stringify({ 
-                            type: 'job', 
-                            params: msg.result.job 
-                        }));
-                    }
-                }
-                // New job
-                else if (msg.method === 'job') {
-                    currentJobId = msg.params.job_id;
-                    ws.send(JSON.stringify({ 
-                        type: 'job', 
-                        params: msg.params 
-                    }));
-                }
-                // Share accepted
-                else if (msg.result && msg.result.status === 'OK') {
-                    hashes++;
-                    stats.totalHashes++;
-                    ws.send(JSON.stringify({ 
-                        type: 'hash_accepted', 
-                        params: { hashes: hashes } 
-                    }));
-                    console.log('[✓] Share accepted! Total:', hashes);
-                }
-                // Error
-                else if (msg.error) {
-                    console.log('[✗] Pool error:', msg.error.message);
-                    ws.send(JSON.stringify({ 
-                        type: 'error', 
-                        params: { error: msg.error.message } 
-                    }));
-                }
-            } catch (e) {
-                console.error('[!] Pool parse error:', e.message);
-            }
+      }
+      else if (msg.type === 'submit') {
+        console.log(`[Miner #${clientId}] Submitting share...`);
+        submitToPool(msg.params);
+        if (miner) {
+          miner.hashes++;
+          miner.lastUpdate = Date.now();
         }
-    });
-
-    pool.on('error', (err) => {
-        console.error('[!] Pool error:', err.message);
-        ws.close();
-    });
-    
-    pool.on('close', () => {
-        console.log('[-] Pool closed');
-        ws.close();
-    });
-
-    ws.on('close', () => {
-        console.log('[-] Client disconnected');
-        stats.clients--;
-        pool.destroy();
-    });
-
-    ws.on('error', (err) => {
-        console.error('[!] WebSocket error:', err.message);
-        pool.destroy();
-    });
+        globalStats.totalHashes++;
+      }
+      // Hashrate update from miner
+      else if (msg.type === 'hashrate' && miner) {
+        miner.hashrate = msg.params.rate || 0;
+        miner.lastUpdate = Date.now();
+      }
+    } catch (e) {
+      console.error(`[Miner #${clientId}] Message error:`, e.message);
+    }
+  });
+  
+  ws.on('close', () => {
+    globalStats.activeMiners.delete(clientId);
+    console.log(`[Miner #${clientId}] Disconnected (${globalStats.activeMiners.size} active)`);
+  });
+  
+  ws.on('error', (err) => {
+    console.error(`[Miner #${clientId}] Error:`, err.message);
+    globalStats.activeMiners.delete(clientId);
+  });
+  
+  // Ping to keep connection alive and detect dead clients
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 });
 
-server.listen(WS_PORT, () => {
-    console.log('[*] Proxy running on port ' + WS_PORT);
+// =============================================================================
+// CLEANUP STALE CONNECTIONS - Remove ghost clients
+// =============================================================================
+setInterval(() => {
+  const now = Date.now();
+  const staleTimeout = 30000; // 30 seconds without update = stale
+  
+  for (const [id, miner] of globalStats.activeMiners) {
+    // Check if WebSocket is still open
+    if (!miner.ws || miner.ws.readyState !== WebSocket.OPEN) {
+      console.log(`[Cleanup] Removing dead miner #${id}`);
+      globalStats.activeMiners.delete(id);
+      continue;
+    }
+    
+    // Ping to check if alive
+    if (miner.ws.isAlive === false) {
+      console.log(`[Cleanup] Miner #${id} not responding, removing`);
+      miner.ws.terminate();
+      globalStats.activeMiners.delete(id);
+      continue;
+    }
+    
+    // Mark as not alive, wait for pong
+    miner.ws.isAlive = false;
+    miner.ws.ping();
+    
+    // Check for stale (no hashrate update for 30s and 0 hashrate)
+    if (miner.hashrate === 0 && (now - miner.lastUpdate) > staleTimeout) {
+      console.log(`[Cleanup] Miner #${id} stale (no activity), removing`);
+      miner.ws.close();
+      globalStats.activeMiners.delete(id);
+    }
+  }
+}, 10000); // Check every 10 seconds
+
+// =============================================================================
+// DASHBOARD HTML GENERATOR
+// =============================================================================
+function generateDashboardHTML() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⛏️ Mining Proxy Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); color: #e6edf3; min-height: 100vh; padding: 2rem; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+    h1 span { color: #6ee7ff; }
+    .subtitle { color: #8b949e; margin-bottom: 2rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+    .card { background: rgba(255,255,255,0.05); border: 1px solid #30363d; border-radius: 12px; padding: 1.5rem; }
+    .card h3 { color: #8b949e; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+    .card .value { font-size: 2rem; font-weight: bold; color: #6ee7ff; }
+    .card .value.green { color: #3fb950; }
+    .card .value.orange { color: #f7931a; }
+    .card .value.red { color: #f85149; }
+    .card .sub { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
+    .miners-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    .miners-table th, .miners-table td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #30363d; }
+    .miners-table th { color: #8b949e; font-weight: 500; }
+    .status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 0.5rem; }
+    .pool-info { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid #6ee7ff; }
+    .combined { background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); border: 2px solid #f7931a; }
+    .footer { text-align: center; color: #8b949e; margin-top: 2rem; font-size: 0.8rem; }
+    a { color: #6ee7ff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>⛏️ <span>Mining Proxy</span> Dashboard</h1>
+    <p class="subtitle">All miners combined into ONE powerful worker</p>
+    
+    <div class="grid">
+      <div class="card combined">
+        <h3>⚡ Combined Hashrate</h3>
+        <div class="value orange" id="combinedHashrate">${globalStats.combinedHashrate.toFixed(2)} H/s</div>
+        <div class="sub" id="minerCountSub">All ${globalStats.activeMiners.size} miners combined</div>
+      </div>
+      
+      <div class="card">
+        <h3>👥 Active Miners</h3>
+        <div class="value" id="minerCount">${globalStats.activeMiners.size}</div>
+        <div class="sub" id="totalConnections">${globalStats.totalConnections} total connections</div>
+      </div>
+      
+      <div class="card">
+        <h3>✅ Accepted Shares</h3>
+        <div class="value green" id="acceptedShares">${globalStats.acceptedShares}</div>
+        <div class="sub" id="rejectedShares">${globalStats.rejectedShares} rejected</div>
+      </div>
+      
+      <div class="card">
+        <h3>🎉 Blocks Found</h3>
+        <div class="value ${globalStats.blocksFound > 0 ? 'green' : ''}" id="blocksFound">${globalStats.blocksFound}</div>
+        <div class="sub" id="totalHashes">Total hashes: ${globalStats.totalHashes.toLocaleString()}</div>
+      </div>
+    </div>
+    
+    <div class="card pool-info">
+      <h3>🌐 Pool Connection</h3>
+      <p style="margin-top: 0.5rem;">
+        <strong>Status:</strong> <span id="poolStatus"><span style="color: ${poolConnected ? '#3fb950' : '#f85149'}">${poolConnected ? '● Connected' : '○ Disconnected'}</span></span><br>
+        <strong>Pool:</strong> ${CONFIG.pool.host}:${CONFIG.pool.port}<br>
+        <strong>Worker:</strong> ${CONFIG.pool.workerName}<br>
+        <strong>Wallet:</strong> ${CONFIG.pool.wallet.slice(0, 12)}...${CONFIG.pool.wallet.slice(-8)}
+      </p>
+    </div>
+    
+    <div class="card" style="margin-top: 1.5rem;">
+      <h3>🖥️ Connected Miners</h3>
+      <table class="miners-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>IP Address</th>
+            <th>Hashrate</th>
+            <th>Shares</th>
+            <th>Connected</th>
+          </tr>
+        </thead>
+        <tbody id="minersTableBody">
+          ${globalStats.activeMiners.size === 0 ? 
+            '<tr><td colspan="5" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>' : 
+            Array.from(globalStats.activeMiners.values()).map(m => `
+          <tr>
+            <td><span class="status"></span>#${m.id}</td>
+            <td>${m.ip}</td>
+            <td>${(m.hashrate || 0).toFixed(2)} H/s</td>
+            <td>${m.hashes}</td>
+            <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
+          </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    
+    <div class="footer">
+      <p>Server uptime: <span id="uptime">${formatUptime(globalStats.uptime)}</span> | <span id="updateStatus">Live updates active</span></p>
+      <p style="margin-top: 0.5rem;">API: <a href="/api/stats">/api/stats</a></p>
+    </div>
+  </div>
+  
+  <script>
+    // Live stats update without page refresh
+    async function updateStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        
+        // Update values
+        document.getElementById('combinedHashrate').textContent = data.mining.combinedHashrate.toFixed(2) + ' H/s';
+        document.getElementById('minerCount').textContent = data.miners.active;
+        document.getElementById('minerCountSub').textContent = 'All ' + data.miners.active + ' miners combined';
+        document.getElementById('totalConnections').textContent = data.miners.totalConnections + ' total connections';
+        document.getElementById('acceptedShares').textContent = data.mining.acceptedShares;
+        document.getElementById('rejectedShares').textContent = data.mining.rejectedShares + ' rejected';
+        document.getElementById('blocksFound').textContent = data.mining.blocksFound;
+        document.getElementById('totalHashes').textContent = 'Total hashes: ' + data.mining.totalHashes.toLocaleString();
+        document.getElementById('poolStatus').innerHTML = '<span style="color: ' + (data.pool.connected ? '#3fb950' : '#f85149') + '">' + (data.pool.connected ? '● Connected' : '○ Disconnected') + '</span>';
+        document.getElementById('uptime').textContent = data.server.uptimeFormatted;
+        
+        // Update miners table
+        const tbody = document.getElementById('minersTableBody');
+        if (data.miners.list.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
+        } else {
+          tbody.innerHTML = data.miners.list.map(m => 
+            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + m.ip + '</td><td>' + (m.hashrate || 0).toFixed(2) + ' H/s</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
+          ).join('');
+        }
+        
+        document.getElementById('updateStatus').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        document.getElementById('updateStatus').textContent = 'Update failed - retrying...';
+      }
+    }
+    
+    function formatUptime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+      if (m > 0) return m + 'm ' + s + 's';
+      return s + 's';
+    }
+    
+    // Update every 2 seconds
+    setInterval(updateStats, 2000);
+    
+    // Initial update after 1 second
+    setTimeout(updateStats, 1000);
+  </script>
+</body>
+</html>`;
+}
+
+function formatUptime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+// =============================================================================
+// START SERVER
+// =============================================================================
+server.listen(CONFIG.port, () => {
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════╗');
+  console.log('║     ⛏️  XMR COMBINED MINING PROXY SERVER              ║');
+  console.log('╠══════════════════════════════════════════════════════╣');
+  console.log(`║  🌐 Web:       http://localhost:${CONFIG.port}                  ║`);
+  console.log(`║  📊 Dashboard: http://localhost:${CONFIG.port}/stats             ║`);
+  console.log(`║  🔌 WebSocket: ws://localhost:${CONFIG.port}/proxy              ║`);
+  console.log(`║  ❤️  Health:   http://localhost:${CONFIG.port}/health            ║`);
+  console.log('╠══════════════════════════════════════════════════════╣');
+  console.log(`║  ⛏️  Pool: ${CONFIG.pool.host}:${CONFIG.pool.port}              ║`);
+  console.log(`║  👷 Worker: ${CONFIG.pool.workerName.padEnd(40)} ║`);
+  console.log('╚══════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log('✨ All miners will be COMBINED into one powerful worker!');
+  console.log('');
+  
+  // Connect to pool immediately
+  connectToPool();
 });

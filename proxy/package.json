@@ -1,10 +1,14 @@
 {
-  "name": "xmr-mining-proxy",
+  "name": "xmr-web-miner",
   "version": "1.0.0",
-  "description": "WebSocket to TCP proxy for browser mining",
+  "description": "XMR Web Miner - Browser-based Monero mining with WebSocket proxy",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "ws": "^8.16.0"

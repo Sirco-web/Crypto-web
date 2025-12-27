@@ -72,6 +72,8 @@ let poolConnected = false;
 let poolAuthenticated = false;  // TRUE only after pool sends first job response
 let poolBuffer = '';
 let currentJob = null;
+let recentJobs = new Map();  // job_id -> job (keep last 10 jobs for slow miners)
+const MAX_RECENT_JOBS = 10;
 let minerId = 0;
 
 function connectToPool() {
@@ -122,6 +124,7 @@ function connectToPool() {
     poolConnected = false;
     poolAuthenticated = false;
     currentJob = null;
+    recentJobs.clear();  // Clear old jobs on error
   });
   
   sharedPool.on('close', () => {
@@ -129,6 +132,7 @@ function connectToPool() {
     poolConnected = false;
     poolAuthenticated = false;
     currentJob = null;
+    recentJobs.clear();  // Clear old jobs on disconnect
     sharedPool = null;
     setTimeout(connectToPool, 5000);
   });
@@ -141,6 +145,7 @@ function handlePoolMessage(msg) {
     console.log('[Pool] Job target (difficulty):', msg.result.job.target);
     poolAuthenticated = true;  // NOW we are truly ready
     currentJob = msg.result.job;
+    addRecentJob(currentJob);
     broadcastToMiners({ type: 'authed', params: { hashes: 0 } });
     broadcastJob(currentJob);
   }
@@ -148,6 +153,7 @@ function handlePoolMessage(msg) {
   else if (msg.method === 'job') {
     console.log('[Pool] New job received, target:', msg.params.target);
     currentJob = msg.params;
+    addRecentJob(currentJob);
     broadcastJob(currentJob);
   }
   // Share accepted
@@ -187,6 +193,17 @@ function broadcastToMiners(msg) {
   }
 }
 
+// Add job to recent jobs list
+function addRecentJob(job) {
+  if (!job || !job.job_id) return;
+  recentJobs.set(job.job_id, job);
+  // Keep only the last MAX_RECENT_JOBS
+  if (recentJobs.size > MAX_RECENT_JOBS) {
+    const firstKey = recentJobs.keys().next().value;
+    recentJobs.delete(firstKey);
+  }
+}
+
 function submitToPool(params) {
   if (!sharedPool || !sharedPool.writable) {
     console.log('[Pool] Cannot submit - not connected');
@@ -198,13 +215,16 @@ function submitToPool(params) {
     return false;
   }
   
-  // CRITICAL: Check if this share is for the CURRENT job
-  // Stale shares (old job_id) will get us kicked from the pool!
-  if (!currentJob || params.job_id !== currentJob.job_id) {
-    console.log('[Pool] ⚠️ Rejecting STALE share - job_id mismatch');
+  // Check if this share is for a RECENT job (allow slightly stale shares)
+  if (!recentJobs.has(params.job_id)) {
+    console.log('[Pool] ⚠️ Rejecting VERY OLD share - job_id not in recent list');
     console.log(`[Pool]    Share job_id: ${params.job_id}`);
-    console.log(`[Pool]    Current job_id: ${currentJob ? currentJob.job_id : 'none'}`);
     return false;
+  }
+  
+  // Log if it's not the current job but still valid
+  if (currentJob && params.job_id !== currentJob.job_id) {
+    console.log('[Pool] 📤 Submitting slightly stale share (still in recent jobs)');
   }
   
   console.log('[Pool] Submitting share:', JSON.stringify(params));

@@ -1,0 +1,8 @@
+exclude:
+  - proxy
+  - node_modules
+  - package.json
+  - package-lock.json
+  - .gitignore
+  - lib
+  - native-miner

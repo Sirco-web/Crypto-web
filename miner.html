@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>XMR Web Miner - RandomX</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    .engine-banner { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 2px solid var(--accent); border-radius: 12px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; text-align: center; box-shadow: 0 0 20px rgba(110, 231, 255, 0.2); }
+    .engine-banner .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 0.5rem; }
+    .engine-banner .engine-name { font-size: 1.5rem; font-weight: bold; color: var(--accent); text-shadow: 0 0 10px rgba(110, 231, 255, 0.5); }
+    .engine-banner.randomx .engine-name { color: #ff6b35; }
+    .status-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .stat-box { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px; text-align: center; }
+    .stat-box .value { font-size: 1.5rem; font-weight: bold; color: var(--accent); }
+    .stat-box .label { font-size: 0.8rem; color: var(--muted); }
+    .log-container { background: rgba(0,0,0,0.5); border-radius: 8px; padding: 1rem; margin-top: 1rem; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry.info { color: #6ee7ff; }
+    .log-entry.success { color: #00ff88; }
+    .log-entry.warning { color: #ffaa00; }
+    .log-entry.error { color: #ff4444; }
+    
+    /* Auto-tune UI */
+    .tune-status { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); border: 1px solid #30363d; border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; }
+    .tune-status .tune-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .tune-status .tune-title { font-size: 0.85rem; font-weight: bold; color: #58a6ff; }
+    .tune-status .tune-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; background: #238636; color: white; }
+    .tune-status .tune-badge.tuning { background: #9e6a03; animation: pulse 1s infinite; }
+    .tune-status .tune-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; font-size: 0.75rem; }
+    .tune-status .tune-item { text-align: center; }
+    .tune-status .tune-item .val { font-weight: bold; color: var(--accent); }
+    .tune-status .tune-item .lbl { color: var(--muted); }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    
+    /* Fix modal button clickability */
+    .modal-overlay { pointer-events: auto; }
+    .modal-content { pointer-events: auto; }
+    .modal-content .btn { 
+      pointer-events: auto; 
+      cursor: pointer; 
+      padding: 15px 30px; 
+      font-size: 1.1rem;
+      margin-top: 1rem;
+      position: relative;
+      z-index: 1001;
+    }
+    .modal-content .btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(110, 231, 255, 0.4);
+    }
+  </style>
+</head>
+<body>
+  <div id="warningModal" class="modal-overlay">
+    <div class="modal-content">
+      <h2>⚠️ Mining Consent</h2>
+      <p>This site uses your CPU to mine Monero (XMR) cryptocurrency using <strong>RandomX</strong>.</p>
+      <p><strong>DISCLAIMER:</strong> All mining proceeds go to the site owner.</p>
+      <p>By clicking "Start Mining", you consent to resource usage.</p>
+      <button id="agreeBtn" class="btn primary" type="button">Start Mining</button>
+    </div>
+  </div>
+
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="sidebar-header"><h2>Miner Status</h2></div>
+      <div class="sidebar-content">
+        <div class="stat-item"><div class="label">Engine</div><div class="value" id="sidebarAlgo">RandomX</div></div>
+        <div class="stat-item"><div class="label">Hashrate</div><div class="value" id="sidebarHashrate">0 H/s</div></div>
+        <div class="stat-item"><div class="label">Total Hashes</div><div class="value" id="sidebarTotalHashes">0</div></div>
+        <div class="stat-item"><div class="label">Accepted</div><div class="value" id="sidebarAccepted" style="color: #00ff88;">0</div></div>
+        <div class="stat-item"><div class="label">Workers</div><div class="value" id="sidebarThreads">0</div></div>
+        <div class="stat-item"><div class="label">Uptime</div><div class="value" id="sidebarUptime">0:00</div></div>
+        <hr class="divider">
+        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: MoneroOcean<br>⚡ RandomX Mining</p></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div class="wrap">
+        <div class="engine-banner randomx" id="engineBanner">
+          <div class="label">Mining Engine</div>
+          <div class="engine-name" id="engineName">RandomX WASM</div>
+        </div>
+
+        <header>
+          <h1>Monero Web Miner</h1>
+          <p class="sub" id="engineSub">RandomX Algorithm - Native XMR Mining</p>
+        </header>
+
+        <section class="card">
+          <div class="status-row">
+            <div>
+              <button id="startBtn" class="btn primary" disabled>Loading...</button>
+              <button id="stopBtn" class="btn" disabled>Stop</button>
+              <button id="maxBtn" class="btn" style="background: linear-gradient(135deg, #ff6b35, #f7931a); border: none;" disabled>⚡ MAX POWER</button>
+            </div>
+            <div class="stat">
+               <div class="k">Status</div>
+               <div class="v" id="status">Loading...</div>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-box"><div class="value" id="hashrate">0</div><div class="label">H/s</div></div>
+            <div class="stat-box"><div class="value" id="totalHashes">0</div><div class="label">Total Hashes</div></div>
+            <div class="stat-box"><div class="value" id="acceptedShares">0</div><div class="label">Accepted</div></div>
+            <div class="stat-box"><div class="value" id="threads">0</div><div class="label">Workers</div></div>
+          </div>
+          
+          <div class="progress-bar">
+             <div class="bar-fill" id="barFill"></div>
+             <div class="bar-text" id="barText">Ready to mine</div>
+          </div>
+          
+          <div class="log-container" id="logContainer">
+            <div class="log-entry info">Initializing RandomX miner...</div>
+          </div>
+          
+          <div class="tune-status" id="tuneStatus">
+            <div class="tune-header">
+              <span class="tune-title">🔧 System Info</span>
+              <span class="tune-badge" id="tuneBadge">Detecting...</span>
+            </div>
+            <div class="tune-details">
+              <div class="tune-item"><div class="val" id="tuneDevice">-</div><div class="lbl">Device</div></div>
+              <div class="tune-item"><div class="val" id="tuneCores">-</div><div class="lbl">CPU Cores</div></div>
+              <div class="tune-item"><div class="val" id="tuneMemory">-</div><div class="lbl">Memory</div></div>
+            </div>
+          </div>
+          
+          <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
+            🏷️ Miner v<span id="clientVersion">2.5.0</span> | <span id="serverVersionInfo">RandomX Engine</span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Configuration -->
+  <script src="config.js"></script>
+  
+  <script>
+    // =========================================================================
+    // GLOBAL VARIABLES FOR PERFEKTWEB.JS
+    // =========================================================================
+    var scriptTag = document.currentScript;
+    var workers = [];
+    var workerCounter = 0;
+    
+    // =========================================================================
+    // PROXY/POOL CONFIGURATION
+    // =========================================================================
+    // Determine WebSocket URL for proxy
+    function getProxyWsUrl() {
+      if (CONFIG.PROXY_URL && CONFIG.PROXY_URL !== 'auto') {
+        return CONFIG.PROXY_URL.replace('/proxy', '');
+      }
+      const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      return wsProtocol + location.hostname + ':8892';
+    }
+    
+    var rightProxy = getProxyWsUrl();
+    var rightPool = CONFIG.POOL || "gulf.moneroocean.stream:10001";
+    var rightalgo = "rx/0"; // RandomX
+    
+    // =========================================================================
+    // HELPERS
+    // =========================================================================
+    const $ = id => document.getElementById(id);
+    let startTime = null, uptimeInterval = null, statsInterval = null;
+    let totalHashes = 0, totalAccepted = 0, currentHashrate = 0;
+    let isMining = false;
+    let maxPowerEnabled = false;
+    
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + type;
+      entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      $('logContainer').appendChild(entry);
+      $('logContainer').scrollTop = $('logContainer').scrollHeight;
+      while ($('logContainer').children.length > 50) $('logContainer').removeChild($('logContainer').firstChild);
+      console.log('[Miner] ' + msg);
+    }
+    
+    function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+    
+    function fmtUptime(ms) {
+      const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+      return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0') : m + ':' + String(r).padStart(2, '0');
+    }
+    
+    function updateUptime() { 
+      if (startTime) $('sidebarUptime').textContent = fmtUptime(Date.now() - startTime); 
+    }
+    
+    function updateStats() {
+      $('hashrate').textContent = fmtNum(currentHashrate);
+      $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
+      $('totalHashes').textContent = fmtNum(totalHashes);
+      $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
+      $('acceptedShares').textContent = totalAccepted;
+      $('sidebarAccepted').textContent = totalAccepted;
+      $('threads').textContent = workers.length;
+      $('sidebarThreads').textContent = workers.length;
+      $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
+      $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
+    }
+    
+    // =========================================================================
+    // HARDWARE DETECTION
+    // =========================================================================
+    const hardwareInfo = {
+      cores: navigator.hardwareConcurrency || 4,
+      memory: navigator.deviceMemory || 4,
+      isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+      
+      detect() {
+        $('tuneDevice').textContent = this.isMobile ? '📱 Mobile' : '💻 Desktop';
+        $('tuneCores').textContent = this.cores;
+        $('tuneMemory').textContent = this.memory ? this.memory + ' GB' : 'Unknown';
+        $('tuneBadge').textContent = 'Detected';
+        log('🔧 Hardware: ' + this.cores + ' cores, ' + (this.memory || '?') + 'GB RAM', 'info');
+        return this;
+      }
+    };
+    
+    // =========================================================================
+    // CALLBACKS FOR PERFEKTWEB.JS
+    // =========================================================================
+    var informWorker = function(worker, workerId) {
+      // Called by perfektweb.js to send initial config to worker
+      log('Worker #' + workerId + ' initialized', 'success');
+      
+      // Send configuration to worker
+      worker.postMessage({
+        type: 'config',
+        proxy: rightProxy,
+        pool: rightPool,
+        algo: rightalgo,
+        wallet: CONFIG.WALLET,
+        worker: CONFIG.WORKER_NAME
+      });
+    };
+    
+    var on_servermsg = function(e) {
+      // Messages from pool/proxy
+      if (e && e.type) {
+        switch(e.type) {
+          case 'authed':
+            log('✓ Authenticated with pool', 'success');
+            $('status').textContent = 'Mining';
+            $('status').style.color = '#00ff88';
+            break;
+          case 'job':
+            log('⛏️ New job received', 'info');
+            break;
+          case 'accepted':
+            totalAccepted++;
+            log('✅ Share accepted! Total: ' + totalAccepted, 'success');
+            updateStats();
+            break;
+          case 'error':
+            log('❌ Error: ' + (e.error || JSON.stringify(e)), 'error');
+            break;
+        }
+      }
+    };
+    
+    var on_workermsg = function(e, workerId) {
+      // Messages from mining workers
+      if (!e || !e.data) return;
+      
+      const data = e.data;
+      
+      // Handle different message types
+      if (data.type === 'hash' || data.hashrate !== undefined) {
+        currentHashrate = data.hashrate || 0;
+        if (data.hashes) totalHashes += data.hashes;
+        updateStats();
+      }
+      
+      if (data.type === 'ready' || data === 'ready') {
+        log('Worker #' + workerId + ' ready', 'success');
+      }
+      
+      if (data.type === 'found') {
+        log('💎 Share found by worker #' + workerId, 'success');
+      }
+      
+      if (data.type === 'accepted') {
+        totalAccepted++;
+        log('✅ Share accepted! Total: ' + totalAccepted, 'success');
+        updateStats();
+      }
+      
+      if (data.type === 'error') {
+        log('❌ Worker error: ' + (data.error || JSON.stringify(data)), 'error');
+      }
+    };
+    
+    // =========================================================================
+    // MINING CONTROLS
+    // =========================================================================
+    function startMining() {
+      if (isMining) return;
+      
+      log('Starting RandomX miner...', 'info');
+      log('Proxy: ' + rightProxy, 'info');
+      log('Pool: ' + rightPool, 'info');
+      
+      isMining = true;
+      startTime = Date.now();
+      uptimeInterval = setInterval(updateUptime, 1000);
+      statsInterval = setInterval(updateStats, 1000);
+      
+      $('startBtn').disabled = true;
+      $('startBtn').textContent = 'Mining...';
+      $('stopBtn').disabled = false;
+      $('maxBtn').disabled = false;
+      $('status').textContent = 'Connecting...';
+      $('status').style.color = '#ffaa00';
+      
+      // Call knowingtogood from perfektweb.js to start workers
+      if (typeof knowingtogood === 'function') {
+        try {
+          // Start workers based on hardware
+          const numWorkers = maxPowerEnabled ? hardwareInfo.cores : Math.max(1, hardwareInfo.cores - 1);
+          for (let i = 0; i < numWorkers; i++) {
+            knowingtogood();
+          }
+          log('Started ' + numWorkers + ' worker(s)', 'success');
+          $('threads').textContent = numWorkers;
+          $('sidebarThreads').textContent = numWorkers;
+        } catch (e) {
+          log('Error starting miner: ' + e.message, 'error');
+          $('status').textContent = 'Error';
+          $('status').style.color = '#ff4444';
+        }
+      } else {
+        log('Error: knowingtogood function not found!', 'error');
+        $('status').textContent = 'Error';
+        $('status').style.color = '#ff4444';
+      }
+    }
+    
+    function stopMining() {
+      if (!isMining) return;
+      
+      log('Stopping miner...', 'warning');
+      isMining = false;
+      maxPowerEnabled = false;
+      
+      // Terminate all workers
+      workers.forEach(w => {
+        try { w.terminate(); } catch(e) {}
+      });
+      workers = [];
+      workerCounter = 0;
+      
+      if (uptimeInterval) { clearInterval(uptimeInterval); uptimeInterval = null; }
+      if (statsInterval) { clearInterval(statsInterval); statsInterval = null; }
+      
+      $('startBtn').disabled = false;
+      $('startBtn').textContent = 'Start Mining';
+      $('stopBtn').disabled = true;
+      $('maxBtn').disabled = true;
+      $('maxBtn').textContent = '⚡ MAX POWER';
+      $('status').textContent = 'Stopped';
+      $('status').style.color = '#ff4444';
+      $('threads').textContent = '0';
+      $('sidebarThreads').textContent = '0';
+      
+      log('Mining stopped', 'warning');
+    }
+    
+    function enableMaxPower() {
+      if (!isMining) return;
+      
+      maxPowerEnabled = true;
+      const currentWorkers = workers.length;
+      const targetWorkers = hardwareInfo.cores;
+      
+      // Add more workers if needed
+      if (currentWorkers < targetWorkers && typeof knowingtogood === 'function') {
+        const toAdd = targetWorkers - currentWorkers;
+        for (let i = 0; i < toAdd; i++) {
+          knowingtogood();
+        }
+        log('⚡ MAX POWER: Added ' + toAdd + ' workers (total: ' + targetWorkers + ')', 'warning');
+      }
+      
+      $('maxBtn').textContent = '⚡ MAXED OUT';
+      $('maxBtn').disabled = true;
+      $('tuneBadge').textContent = '⚡ MAX POWER';
+      
+      log('⚠️ System may become less responsive', 'warning');
+    }
+    
+    // =========================================================================
+    // INITIALIZATION
+    // =========================================================================
+    function init() {
+      hardwareInfo.detect();
+      
+      // Check if perfektweb.js loaded
+      if (typeof knowingtogood === 'function') {
+        log('RandomX miner ready!', 'success');
+        $('startBtn').disabled = false;
+        $('startBtn').textContent = 'Start Mining';
+        $('status').textContent = 'Ready';
+      } else {
+        log('Waiting for miner script...', 'info');
+        setTimeout(init, 500);
+      }
+    }
+    
+    // Event listeners
+    document.getElementById('agreeBtn').onclick = function() {
+      document.getElementById('warningModal').style.display = 'none';
+      startMining();
+    };
+    document.getElementById('startBtn').onclick = startMining;
+    document.getElementById('stopBtn').onclick = stopMining;
+    document.getElementById('maxBtn').onclick = enableMaxPower;
+    
+    // Auto-start check
+    function checkAutoAgree() {
+      if (localStorage.getItem('autoAgree') === 'true') {
+        localStorage.removeItem('autoAgree');
+        document.getElementById('warningModal').style.display = 'none';
+        setTimeout(startMining, 1000);
+      }
+    }
+    
+    window.addEventListener('load', function() {
+      init();
+      checkAutoAgree();
+    });
+  </script>
+  
+  <!-- Load the RandomX miner -->
+  <script src="perfektweb.js"></script>
+</body>
+</html>

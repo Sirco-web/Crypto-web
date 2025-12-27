@@ -1051,6 +1051,50 @@ const server = http.createServer((req, res) => {
     fs.createReadStream(filePath).pipe(res);
     return;
   }
+
+  // Serve perfektweb.js from ROOT directory
+  if (pathname === '/perfektweb.js') {
+    const filePath = path.join(CONFIG.publicPath, 'perfektweb.js');
+    if (fs.existsSync(filePath)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.writeHead(200);
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
+
+  // Serve miner.html (Web Miner) from ROOT directory
+  if (pathname === '/miner.html' || pathname === '/miner') {
+     const filePath = path.join(CONFIG.publicPath, 'miner.html');
+     if (fs.existsSync(filePath)) {
+       res.setHeader('Content-Type', 'text/html');
+       res.writeHead(200);
+       fs.createReadStream(filePath).pipe(res);
+       return;
+     }
+  }
+  
+  // Serve config.js from ROOT directory
+  if (pathname === '/config.js') {
+     const filePath = path.join(CONFIG.publicPath, 'config.js');
+     if (fs.existsSync(filePath)) {
+       res.setHeader('Content-Type', 'application/javascript');
+       res.writeHead(200);
+       fs.createReadStream(filePath).pipe(res);
+       return;
+     }
+  }
+  
+  // Serve styles.css from ROOT directory
+  if (pathname === '/styles.css') {
+     const filePath = path.join(CONFIG.publicPath, 'styles.css');
+     if (fs.existsSync(filePath)) {
+       res.setHeader('Content-Type', 'text/css');
+       res.writeHead(200);
+       fs.createReadStream(filePath).pipe(res);
+       return;
+     }
+  }
   
   // 404 for anything else
   res.setHeader('Content-Type', 'text/html');

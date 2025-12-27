@@ -12,11 +12,18 @@ const fs = require('fs');
 const path = require('path');
 
 // =============================================================================
+// VERSION - Update this when making changes!
+// =============================================================================
+const SERVER_VERSION = '2.5.0';
+const VERSION_DATE = '2025-12-27';
+
+// =============================================================================
 // CONFIGURATION - Edit these or use environment variables!
 // =============================================================================
 const CONFIG = {
   // Server
   port: process.env.PORT || 8892,
+  version: SERVER_VERSION,
   
   // Owner PIN for admin panel (CHANGE THIS!)
   ownerPin: process.env.OWNER_PIN || '1234',
@@ -474,14 +481,19 @@ const server = http.createServer((req, res) => {
     
     res.end(JSON.stringify({
       server: {
+        version: SERVER_VERSION,
+        versionDate: VERSION_DATE,
         uptime: globalStats.uptime,
         uptimeFormatted: formatUptime(globalStats.uptime)
       },
       pool: {
         host: CONFIG.pool.host,
+        port: CONFIG.pool.port,
         connected: poolConnected,
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),
-        workerName: CONFIG.pool.workerName
+        workerName: CONFIG.pool.workerName,
+        autoMode: CONFIG.pool.autoMode,
+        difficulty: CONFIG.pool.difficulty
       },
       mining: {
         combinedHashrate: globalStats.combinedHashrate,
@@ -504,7 +516,14 @@ const server = http.createServer((req, res) => {
   if (pathname === '/health') {
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', uptime: globalStats.uptime }));
+    res.end(JSON.stringify({ 
+      status: 'ok', 
+      version: SERVER_VERSION,
+      versionDate: VERSION_DATE,
+      uptime: globalStats.uptime,
+      workerName: CONFIG.pool.workerName,
+      autoMode: CONFIG.pool.autoMode
+    }));
     return;
   }
   
@@ -2017,8 +2036,9 @@ function generateDashboardHTML() {
     </div>
     
     <div class="footer">
-      <p>Server uptime: <span id="uptime">${formatUptime(globalStats.uptime)}</span> | <span id="updateStatus">Live updates active</span></p>
-      <p style="margin-top: 0.5rem;">API: <a href="/api/stats">/api/stats</a></p>
+      <p><strong>🏷️ Server v${SERVER_VERSION}</strong> (${VERSION_DATE}) | Mode: <span id="modeDisplay">${CONFIG.pool.autoMode ? '🤖 AUTO' : '⚙️ MANUAL'}</span></p>
+      <p style="margin-top: 0.3rem;">Server uptime: <span id="uptime">${formatUptime(globalStats.uptime)}</span> | <span id="updateStatus">Live updates active</span></p>
+      <p style="margin-top: 0.5rem;">API: <a href="/api/stats">/api/stats</a> | Health: <a href="/health">/health</a></p>
     </div>
   </div>
   
@@ -2089,19 +2109,22 @@ function formatUptime(seconds) {
 // =============================================================================
 server.listen(CONFIG.port, () => {
   console.log('');
-  console.log('╔══════════════════════════════════════════════════════╗');
-  console.log('║     ⛏️  XMR COMBINED MINING PROXY SERVER              ║');
-  console.log('╠══════════════════════════════════════════════════════╣');
-  console.log(`║  🌐 Web:       http://localhost:${CONFIG.port}                  ║`);
-  console.log(`║  📊 Dashboard: http://localhost:${CONFIG.port}/stats             ║`);
-  console.log(`║  🔌 WebSocket: ws://localhost:${CONFIG.port}/proxy              ║`);
-  console.log(`║  ❤️  Health:   http://localhost:${CONFIG.port}/health            ║`);
-  console.log('╠══════════════════════════════════════════════════════╣');
-  console.log(`║  ⛏️  Pool: ${CONFIG.pool.host}:${CONFIG.pool.port}              ║`);
-  console.log(`║  👷 Worker: ${CONFIG.pool.workerName.padEnd(40)} ║`);
-  console.log('╚══════════════════════════════════════════════════════╝');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log(`║     ⛏️  XMR MINING PROXY SERVER v${SERVER_VERSION}                        ║`);
+  console.log(`║     📅 ${VERSION_DATE}                                            ║`);
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+  console.log(`║  🌐 Web:       http://localhost:${CONFIG.port}                        ║`);
+  console.log(`║  📊 Dashboard: http://localhost:${CONFIG.port}/stats                   ║`);
+  console.log(`║  🔌 WebSocket: ws://localhost:${CONFIG.port}/proxy                    ║`);
+  console.log(`║  ❤️  Health:   http://localhost:${CONFIG.port}/health                  ║`);
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+  console.log(`║  ⛏️  Pool: ${CONFIG.pool.host}:${CONFIG.pool.port}                    ║`);
+  console.log(`║  👷 Worker: ${CONFIG.pool.workerName.padEnd(48)} ║`);
+  console.log(`║  🔧 Mode: ${(CONFIG.pool.autoMode ? 'AUTO' : 'MANUAL').padEnd(50)} ║`);
+  console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log('✨ All miners will be COMBINED into one powerful worker!');
+  console.log(`🔄 Difficulty: ${CONFIG.pool.autoMode ? 'Auto-calculated from hashrate' : CONFIG.pool.difficulty}`);
   console.log('');
   
   // Connect to pool immediately

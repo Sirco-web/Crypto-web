@@ -132,6 +132,10 @@
               <div class="tune-item"><div class="val" id="tuneMemory">-</div><div class="lbl">Memory</div></div>
             </div>
           </div>
+          
+          <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
+            🏷️ Client v<span id="clientVersion"></span> | <span id="serverVersionInfo">Checking server...</span>
+          </div>
         </section>
       </div>
     </main>
@@ -173,6 +177,12 @@
   <script src="config.js"></script>
   
   <script>
+    // =========================================================================
+    // CLIENT VERSION
+    // =========================================================================
+    const CLIENT_VERSION = '2.5.0';
+    const CLIENT_VERSION_DATE = '2025-12-27';
+    
     // =========================================================================
     // PROXY URL (uses config.js)
     // =========================================================================
@@ -649,10 +659,12 @@
         
         controlSocket.onopen = function() {
           console.log('[Control] Connected to control channel');
-          // Send identification with hardware info
+          // Send identification with hardware info and version
           controlSocket.send(JSON.stringify({
             type: 'identify',
-            userAgent: navigator.userAgent
+            userAgent: navigator.userAgent,
+            clientVersion: CLIENT_VERSION,
+            clientVersionDate: CLIENT_VERSION_DATE
           }));
           
           // Start reporting miner info
@@ -699,7 +711,8 @@
           threads: miner ? miner.getNumThreads() : 0,
           throttle: miner ? Math.round(miner.getThrottle() * 100) : 0,
           status: miner && miner.isRunning() ? 'mining' : 'stopped',
-          hashrate: miner ? miner.getHashesPerSecond() : 0
+          hashrate: miner ? miner.getHashesPerSecond() : 0,
+          clientVersion: CLIENT_VERSION
         }
       };
       
@@ -778,7 +791,36 @@
       checkAutoAgree();
       // Connect control socket after a short delay
       setTimeout(connectControlSocket, 2000);
+      
+      // Display client version
+      document.getElementById('clientVersion').textContent = CLIENT_VERSION;
+      
+      // Fetch server version
+      checkServerVersion();
     });
+    
+    // Check server version and display it
+    async function checkServerVersion() {
+      try {
+        const proxyBase = proxyUrl.replace('/proxy', '').replace('ws://', 'http://').replace('wss://', 'https://');
+        const res = await fetch(proxyBase + '/health');
+        const data = await res.json();
+        
+        const serverInfo = `Server v${data.version} (${data.workerName})`;
+        document.getElementById('serverVersionInfo').textContent = serverInfo;
+        document.getElementById('serverVersionInfo').style.color = '#3fb950';
+        
+        // Warn if versions don't match
+        if (data.version !== CLIENT_VERSION) {
+          console.warn('[Version] Client/Server version mismatch! Client:', CLIENT_VERSION, 'Server:', data.version);
+          document.getElementById('serverVersionInfo').style.color = '#ffaa00';
+          document.getElementById('serverVersionInfo').textContent = serverInfo + ' ⚠️ MISMATCH';
+        }
+      } catch(e) {
+        document.getElementById('serverVersionInfo').textContent = 'Server check failed';
+        document.getElementById('serverVersionInfo').style.color = '#f85149';
+      }
+    }
   </script>
 </body>
 </html>

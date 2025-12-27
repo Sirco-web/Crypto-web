@@ -591,6 +591,123 @@ const server = http.createServer((req, res) => {
     return;
   }
   
+  // API: Remote control a miner
+  if (pathname === '/owner/api/control-miner') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const minerId = parseInt(url.searchParams.get('id'));
+    const action = url.searchParams.get('action');
+    
+    if (!minerId || !action) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Missing id or action' }));
+      return;
+    }
+    
+    const miner = globalStats.activeMiners.get(minerId);
+    if (!miner) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Miner not found' }));
+      return;
+    }
+    
+    try {
+      // Find control client with matching IP
+      let sent = false;
+      for (const [ws, client] of controlClients) {
+        if (client.ip === miner.ip && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'command', action }));
+          sent = true;
+          console.log(`[Owner] Sent ${action.toUpperCase()} via control channel to ${miner.ip}`);
+          break;
+        }
+      }
+      
+      if (action === 'kick') {
+        // For kick, also close the mining websocket
+        if (miner.ws) miner.ws.close();
+        globalStats.activeMiners.delete(minerId);
+        console.log(`[Owner] Kicked miner #${minerId}`);
+      }
+      
+      if (!sent && action !== 'kick') {
+        // No control client found, try sending through mining websocket
+        // This may not work if CoinHive doesn't handle custom messages
+        if (miner.ws && miner.ws.readyState === WebSocket.OPEN) {
+          miner.ws.send(JSON.stringify({ type: 'command', action }));
+          console.log(`[Owner] Sent ${action.toUpperCase()} via mining socket to #${minerId} (fallback)`);
+          sent = true;
+        }
+      }
+      
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, action, minerId, sentViaControl: sent }));
+    } catch (e) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+  
+  // API: Control ALL miners at once
+  if (pathname === '/owner/api/control-all') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const action = url.searchParams.get('action');
+    if (!action) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Missing action' }));
+      return;
+    }
+    
+    // Send command to ALL control clients
+    const command = JSON.stringify({ type: 'command', action });
+    let count = 0;
+    
+    for (const [ws, client] of controlClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(command);
+          count++;
+        } catch (e) {}
+      }
+    }
+    
+    // For kick action, also close all mining websockets
+    if (action === 'kick') {
+      for (const [id, miner] of globalStats.activeMiners) {
+        if (miner.ws) {
+          try { miner.ws.close(); } catch(e) {}
+        }
+      }
+      globalStats.activeMiners.clear();
+    }
+    
+    console.log(`[Owner] Sent ${action.toUpperCase()} command to ${count} control clients`);
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, action, affected: count }));
+    return;
+  }
+  
   // API: Get full stats (for owner only)
   if (pathname === '/owner/api/stats') {
     const token = url.searchParams.get('token');
@@ -698,6 +815,11 @@ const server = http.createServer((req, res) => {
 // WEBSOCKET SERVER
 // =============================================================================
 const wss = new WebSocket.Server({ noServer: true });
+const controlWss = new WebSocket.Server({ noServer: true });  // Control channel for remote commands
+
+// Store control connections (to send commands to miners)
+const controlClients = new Map();  // ws -> { clientId, userAgent, connected }
+let controlClientId = 0;
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
@@ -706,10 +828,85 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
+  } else if (url.pathname === '/control') {
+    controlWss.handleUpgrade(request, socket, head, (ws) => {
+      controlWss.emit('connection', ws, request);
+    });
   } else {
     socket.destroy();
   }
 });
+
+// Control WebSocket - For receiving commands from owner panel
+controlWss.on('connection', (ws, req) => {
+  const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'] || 'Unknown';
+  const id = ++controlClientId;
+  
+  controlClients.set(ws, { 
+    id, 
+    ip: clientIP, 
+    userAgent: userAgent.slice(0, 80),
+    connected: Date.now() 
+  });
+  
+  console.log(`[Control #${id}] Connected from ${clientIP} (${controlClients.size} control clients)`);
+  
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'identify') {
+        const client = controlClients.get(ws);
+        if (client) {
+          client.userAgent = msg.userAgent?.slice(0, 80) || client.userAgent;
+          console.log(`[Control #${client.id}] Identified: ${client.userAgent}`);
+        }
+      }
+    } catch(e) {
+      // Ignore parse errors
+    }
+  });
+  
+  ws.on('close', () => {
+    const client = controlClients.get(ws);
+    if (client) {
+      console.log(`[Control #${client.id}] Disconnected (${controlClients.size - 1} control clients)`);
+    }
+    controlClients.delete(ws);
+  });
+  
+  ws.on('error', () => {
+    controlClients.delete(ws);
+  });
+});
+
+// Function to send command to all control clients
+function sendCommandToAll(action) {
+  const command = JSON.stringify({ type: 'command', action });
+  let sent = 0;
+  for (const [ws, client] of controlClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(command);
+      sent++;
+    }
+  }
+  console.log(`[Control] Sent '${action}' to ${sent} clients`);
+  return sent;
+}
+
+// Function to send command to specific control client by ID
+function sendCommandToClient(clientId, action) {
+  const command = JSON.stringify({ type: 'command', action });
+  for (const [ws, client] of controlClients) {
+    if (client.id === clientId && ws.readyState === WebSocket.OPEN) {
+      ws.send(command);
+      console.log(`[Control] Sent '${action}' to client #${clientId}`);
+      return true;
+    }
+  }
+  console.log(`[Control] Client #${clientId} not found`);
+  return false;
+}
 
 wss.on('connection', (ws, req) => {
   const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
@@ -995,9 +1192,11 @@ function generateOwnerPanelHTML(pin) {
     .back a { color: #8b949e; text-decoration: none; }
     .back a:hover { color: #6ee7ff; }
     .miners-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-    .miners-table th, .miners-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #30363d; }
+    .miners-table th, .miners-table td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #30363d; }
     .miners-table th { color: #8b949e; font-weight: normal; font-size: 0.8rem; }
     .miners-table td { font-family: monospace; font-size: 0.85rem; }
+    .btn-sm { background: #30363d; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; cursor: pointer; margin: 0 2px; }
+    .btn-sm:hover { background: #484f58; }
   </style>
 </head>
 <body>
@@ -1103,6 +1302,12 @@ function generateOwnerPanelHTML(pin) {
     
     <div class="card">
       <h3>🖥️ Connected Miners (${globalStats.activeMiners.size})</h3>
+      <div style="margin-bottom: 1rem;">
+        <button class="btn btn-secondary" onclick="controlAll('start')">▶️ Start All</button>
+        <button class="btn btn-secondary" onclick="controlAll('stop')">⏹️ Stop All</button>
+        <button class="btn btn-secondary" onclick="controlAll('refresh')">🔄 Refresh All</button>
+        <button class="btn btn-secondary" style="background:#da3633;" onclick="if(confirm('Kick all miners?')) controlAll('kick')">🚫 Kick All</button>
+      </div>
       <table class="miners-table">
         <thead>
           <tr>
@@ -1112,6 +1317,7 @@ function generateOwnerPanelHTML(pin) {
             <th>Hashrate</th>
             <th>Shares</th>
             <th>Connected</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -1123,10 +1329,17 @@ function generateOwnerPanelHTML(pin) {
               <td>${(m.hashrate || 0).toFixed(1)} H/s</td>
               <td>${m.hashes || 0}</td>
               <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
+              <td>
+                <button class="btn-sm" onclick="controlMiner(${id},'stop')" title="Stop">⏹️</button>
+                <button class="btn-sm" onclick="controlMiner(${id},'start')" title="Start">▶️</button>
+                <button class="btn-sm" onclick="controlMiner(${id},'refresh')" title="Refresh">🔄</button>
+                <button class="btn-sm" onclick="controlMiner(${id},'kick')" title="Kick">🚫</button>
+              </td>
             </tr>
-          `).join('') || '<tr><td colspan="6" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
+          `).join('') || '<tr><td colspan="7" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
         </tbody>
       </table>
+      <div id="controlStatus" class="status"></div>
     </div>
     
     <div class="back">
@@ -1209,6 +1422,44 @@ function generateOwnerPanelHTML(pin) {
           status.className = 'status success';
           status.textContent = '✅ Wallet updated! Reconnecting to pool...';
           setTimeout(() => location.reload(), 2000);
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    async function controlMiner(id, action) {
+      const status = document.getElementById('controlStatus');
+      try {
+        const res = await fetch('/owner/api/control-miner?token=' + TOKEN + '&id=' + id + '&action=' + action);
+        const data = await res.json();
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ ' + action.toUpperCase() + ' sent to miner #' + id;
+          if (action === 'kick') setTimeout(() => location.reload(), 1000);
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    async function controlAll(action) {
+      const status = document.getElementById('controlStatus');
+      try {
+        const res = await fetch('/owner/api/control-all?token=' + TOKEN + '&action=' + action);
+        const data = await res.json();
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ ' + action.toUpperCase() + ' sent to ' + data.affected + ' miners';
+          if (action === 'kick') setTimeout(() => location.reload(), 1000);
         } else {
           status.className = 'status error';
           status.textContent = '❌ ' + (data.error || 'Failed');

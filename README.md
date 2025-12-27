@@ -1,33 +1,52 @@
 # ⛏️ XMR Web Miner
 
-Browser-based Monero (XMR) miner with combined mining power. All connected browsers become ONE powerful worker on the pool!
+Browser-based Monero (XMR) miner using the **RandomX algorithm**. All connected browsers become ONE powerful worker on the pool!
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 🌟 Features
 
 - **Combined Mining** - All connected miners share ONE pool connection = combined hashpower!
-- **Auto-Tune** - Automatically detects hardware and optimizes settings
+- **RandomX Algorithm** - Native Monero mining (rx/0) via WebAssembly
+- **Auto-Tune** - Automatically detects hardware and optimizes thread count
 - **MAX POWER Mode** - Use 100% of CPU for maximum hashrate
-- **Dashboard** - Real-time stats at `/stats` showing all miners, combined hashrate, shares
+- **Real-time Dashboard** - Live stats at `/stats` showing all miners, combined hashrate, shares
+- **Auto-Reconnect** - Handles disconnections gracefully
 - **CORS Enabled** - No cross-origin errors
-- **Koyeb/Render Ready** - Deploys easily to any Node.js platform
+- **Cloud Ready** - Deploys to Koyeb, Render, Railway, etc.
 
 ## 📁 Project Structure
 
 ```
 Crypto-web/
-├── index.html      # Mining frontend
-├── styles.css      # Styles
-├── lib/            # CryptoNight WASM mining library
+├── index.html          # Landing page
+├── miner.html          # Main mining interface ⭐
+├── index.js            # Bundled miner library (WRXMiner)
+├── 178.js              # RandomX WASM Worker ⭐
+├── styles.css          # UI styling
+├── config.js           # Configuration
+├── FIXES.md            # Developer documentation ⭐
+│
+├── lib/                # CryptoNight library (legacy)
 │   ├── miner.min.js
-│   ├── cryptonight.wasm
 │   ├── cryptonight-asmjs.min.js
 │   └── cryptonight-asmjs.min.js.mem
-└── proxy/          # Server (deploy this!)
-    ├── server.js   # Combined proxy + web server
-    └── package.json
+│
+├── proxy/              # Proxy Server (deploy this!) ⭐
+│   ├── server.js       # Main server (2300+ lines)
+│   └── package.json
+│
+├── native-miner/       # Native XMRig setup scripts
+│   ├── miner.py
+│   ├── setup_xmrig.sh
+│   └── start_xmrig.sh
+│
+└── wasm/               # WASM build artifacts
 ```
 
-## 🚀 Quick Start (Local)
+## 🚀 Quick Start
+
+### Local Development
 
 ```bash
 cd proxy
@@ -35,22 +54,31 @@ npm install
 npm start
 ```
 
-Then open: http://localhost:8892
+Then open: http://localhost:8892/miner.html
+
+### Using Docker
+
+```bash
+docker build -t xmr-miner ./proxy
+docker run -p 8892:8892 xmr-miner
+```
 
 ## ☁️ Deploy to Koyeb
 
 1. Push to GitHub
-2. Go to [Koyeb](https://koyeb.com)
+2. Go to [Koyeb](https://app.koyeb.com)
 3. Create new Web Service from your GitHub repo
 4. Set:
    - **Build command**: `cd proxy && npm install`
    - **Run command**: `cd proxy && npm start`
-   - **Port**: `8892`
-5. Set environment variables (optional):
-   - `WALLET` - Your XMR wallet address
-   - `WORKER_NAME` - Worker name on pool
-   - `POOL_HOST` - Pool address (default: gulf.moneroocean.stream)
-   - `POOL_PORT` - Pool port (default: 10128)
+   - **Port**: `8000` (or match your PORT env var)
+5. Environment variables (optional):
+   ```
+   WALLET=your_xmr_wallet_address
+   WORKER_NAME=your_worker_name
+   POOL_HOST=gulf.moneroocean.stream
+   POOL_PORT=10001
+   ```
 
 ## ☁️ Deploy to Render
 
@@ -60,46 +88,146 @@ Then open: http://localhost:8892
    - **Root Directory**: `proxy`
    - **Build Command**: `npm install`
    - **Start Command**: `npm start`
-4. Environment variables same as above
+4. Add environment variables as needed
+
+## 🔧 How It Works
+
+### Architecture
+
+```
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   Browser 1  │  │   Browser 2  │  │   Browser N  │
+│  (miner.html)│  │  (miner.html)│  │  (miner.html)│
+│              │  │              │  │              │
+│  RandomX     │  │  RandomX     │  │  RandomX     │
+│  WASM Worker │  │  WASM Worker │  │  WASM Worker │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │ WebSocket       │                 │
+       └─────────────────┼─────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │    Proxy Server     │
+              │    (server.js)      │
+              │                     │
+              │  • Manages miners   │
+              │  • Single pool conn │
+              │  • Broadcasts jobs  │
+              │  • Submits shares   │
+              └──────────┬──────────┘
+                         │ TCP/Stratum
+              ┌──────────▼──────────┐
+              │    Mining Pool      │
+              │   (MoneroOcean)     │
+              └─────────────────────┘
+```
+
+### Why Combined Mining?
+
+Instead of each browser appearing as a separate worker on the pool:
+- ❌ 20 workers × 10 H/s = scattered, hard to track
+- ✅ 1 worker × 200 H/s = combined, clean dashboard
+
+### RandomX Job Flow
+
+1. **Pool** sends job with `blob`, `target`, `seed_hash`, `height`, `algo`
+2. **Proxy** broadcasts job to all connected browsers
+3. **Worker (178.js)** uses `seed_hash` to initialize RandomX, mines against `blob`
+4. **Worker** finds valid hash → submits `nonce` + `result` to proxy
+5. **Proxy** forwards share to pool
 
 ## 📊 Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `/` | Mining interface |
-| `/stats` | Dashboard with all miners & combined stats |
+| `/` | Landing page |
+| `/miner.html` | Main mining interface |
+| `/stats` | Real-time dashboard |
 | `/api/stats` | JSON API for stats |
-| `/health` | Health check for monitoring |
-| `/proxy` | WebSocket endpoint for miners |
+| `/health` | Health check (200 OK) |
+| `/proxy` | WebSocket for miners |
 
 ## ⚙️ Configuration
 
-Edit `proxy/server.js` or use environment variables:
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 8892 | Server port |
+| `WALLET` | (hardcoded) | XMR wallet address |
+| `WORKER_NAME` | sirco-sub-pool-miners | Pool worker name |
+| `POOL_HOST` | gulf.moneroocean.stream | Pool hostname |
+| `POOL_PORT` | 10001 | Pool port (10001=auto-diff, 10128=high) |
+
+### Pool Ports (MoneroOcean)
+
+| Port | Difficulty | Recommended For |
+|------|------------|-----------------|
+| 10001 | Auto | Most users |
+| 10004 | 10000 | Medium hashrate |
+| 10016 | 160000 | High hashrate |
+| 10128 | 1000000 | Very high hashrate |
+
+## 🔴 Known Issues & Fixes
+
+See **[FIXES.md](FIXES.md)** for detailed documentation on:
+- All bugs fixed and their root causes
+- How the codebase works internally
+- Common issues and solutions
+- API reference
+- Development guide
+
+### Recent Fix (Dec 27, 2025)
+
+**Issue**: `Cannot read properties of undefined (reading 'length')` in 178.js
+
+**Cause**: RandomX requires `seed_hash` but it wasn't being forwarded from proxy to browser
+
+**Status**: ✅ Fixed - all job send paths now include `seed_hash`, `height`, `algo`
+
+## 🛠️ Development
+
+### Testing WebSocket
 
 ```javascript
-const CONFIG = {
-  port: process.env.PORT || 8892,
-  pool: {
-    host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
-    port: parseInt(process.env.POOL_PORT) || 10128,
-    wallet: process.env.WALLET || 'YOUR_WALLET_HERE',
-    workerName: process.env.WORKER_NAME || 'CombinedWebMiners'
-  }
-};
+const WebSocket = require('ws');
+const ws = new WebSocket('ws://localhost:8892/proxy');
+
+ws.on('message', data => {
+  console.log(JSON.parse(data));
+});
 ```
 
-## 💡 How Combined Mining Works
+### Adding Features
 
-Instead of each browser connecting separately to the pool (appearing as 20 different workers), ALL browsers connect to YOUR proxy. The proxy maintains ONE connection to the pool and submits shares on behalf of all miners.
+1. Read [FIXES.md](FIXES.md) first!
+2. Understand the 3 job send paths
+3. Test locally before deploying
+4. Update documentation
 
-Pool sees: **1 worker with 200 H/s** (combined)
-Not: **20 workers with 10 H/s each**
+## 📈 Performance Tips
 
-This means:
-- Cleaner pool dashboard
-- All hashpower combined under one worker name
-- Easier to track earnings
+1. **Use MAX POWER mode** for dedicated mining machines
+2. **Auto-threads** works best for shared devices
+3. **Lower throttle** = more hashing but higher CPU usage
+4. **Use high-diff port** if combined hashrate > 1 KH/s
+
+## 🔗 Links
+
+- **Pool Dashboard**: [MoneroOcean](https://moneroocean.stream)
+- **RandomX**: [GitHub](https://github.com/tevador/RandomX)
+- **Original WebRandomX**: [Vectra/WebRandomX](https://github.com/AnyoneMiner/WebRandomX)
 
 ## 📜 License
 
-MIT
+MIT License - See [LICENSE](LICENSE)
+
+## 🙏 Credits
+
+- [WebRandomX](https://github.com/AnyoneMiner/WebRandomX) - Original RandomX web implementation
+- [WRXProxy](https://github.com/AnyoneMiner/WRXProxy) - Proxy reference implementation
+- [MoneroOcean](https://moneroocean.stream) - Mining pool
+- [RandomX](https://github.com/tevador/RandomX) - Mining algorithm
+
+---
+
+**⚠️ Disclaimer**: Mining cryptocurrency uses significant CPU resources. Ensure you have permission before mining on shared systems. This project is for educational purposes.

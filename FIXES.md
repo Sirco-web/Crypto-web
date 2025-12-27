@@ -1,0 +1,488 @@
+# 🔧 Fixes, Architecture & Developer Guide
+
+This document explains all fixes applied to the XMR Web Miner, how the system works, and provides guidance for future developers/AIs to understand and improve the codebase.
+
+---
+
+## 📋 Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Critical Fixes Applied](#critical-fixes-applied)
+3. [File Structure & Responsibilities](#file-structure--responsibilities)
+4. [Data Flow](#data-flow)
+5. [Common Issues & Solutions](#common-issues--solutions)
+6. [API Reference](#api-reference)
+7. [Development Guide](#development-guide)
+
+---
+
+## 🏗️ Architecture Overview
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Browser #1    │     │   Browser #2    │     │   Browser #N    │
+│   (miner.html)  │     │   (miner.html)  │     │   (miner.html)  │
+│                 │     │                 │     │                 │
+│  ┌───────────┐  │     │  ┌───────────┐  │     │  ┌───────────┐  │
+│  │  178.js   │  │     │  │  178.js   │  │     │  │  178.js   │  │
+│  │ (Worker)  │  │     │  │ (Worker)  │  │     │  │ (Worker)  │  │
+│  │ RandomX   │  │     │  │ RandomX   │  │     │  │ RandomX   │  │
+│  │  WASM     │  │     │  │  WASM     │  │     │  │  WASM     │  │
+│  └─────┬─────┘  │     │  └─────┬─────┘  │     │  └─────┬─────┘  │
+└────────┼────────┘     └────────┼────────┘     └────────┼────────┘
+         │ WebSocket             │ WebSocket             │ WebSocket
+         └───────────────────────┼───────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │     Proxy Server        │
+                    │    (server.js)          │
+                    │                         │
+                    │  - Manages all miners   │
+                    │  - Single pool conn     │
+                    │  - Broadcasts jobs      │
+                    │  - Submits shares       │
+                    └────────────┬────────────┘
+                                 │ TCP Socket
+                    ┌────────────▼────────────┐
+                    │    Mining Pool          │
+                    │  (MoneroOcean)          │
+                    │                         │
+                    │  gulf.moneroocean.stream│
+                    └─────────────────────────┘
+```
+
+### Key Concepts
+
+1. **Combined Mining**: All browsers connect to ONE proxy which maintains ONE pool connection
+2. **RandomX Algorithm**: Monero's mining algorithm (rx/0) - requires `seed_hash` for initialization
+3. **WebSocket Protocol**: Browser ↔ Proxy communication
+4. **Stratum Protocol**: Proxy ↔ Pool communication (JSON-RPC over TCP)
+
+---
+
+## 🔴 Critical Fixes Applied
+
+### Fix #1: Missing `seed_hash` in Job Broadcast (December 27, 2025)
+
+**Error**: 
+```
+Uncaught TypeError: Cannot read properties of undefined (reading 'length')
+    at h.hexToBytes (178.js:1:2617)
+    at h.setJob (178.js:1:3363)
+```
+
+**Root Cause**: The RandomX WASM worker (`178.js`) requires `seed_hash` to initialize the RandomX algorithm. The proxy was receiving complete job data from the pool but only forwarding partial data to browsers.
+
+**Affected Code Locations** (3 places in `proxy/server.js`):
+
+1. **`broadcastJob()` function** (~line 405)
+   - Used when pool sends new jobs via `method: 'job'`
+   
+2. **Miner connection handler** (~line 1331)
+   - Sends current job when a new browser connects
+   
+3. **Auth request handler** (~line 1354)
+   - Sends job when browser sends `type: 'auth'`
+
+**The Fix**:
+
+```javascript
+// BEFORE (broken):
+ws.send(JSON.stringify({
+  type: 'job',
+  params: {
+    job_id: currentJob.job_id,
+    blob: currentJob.blob,
+    target: currentJob.target
+  }
+}));
+
+// AFTER (fixed):
+ws.send(JSON.stringify({
+  type: 'job',
+  params: {
+    job_id: currentJob.job_id,
+    blob: currentJob.blob,
+    target: currentJob.target,
+    seed_hash: currentJob.seed_hash,  // REQUIRED for RandomX
+    height: currentJob.height,         // Block height
+    algo: currentJob.algo || 'rx/0'    // Algorithm identifier
+  }
+}));
+```
+
+**Why This Matters**: The `hexToBytes()` function in the worker tries to convert `seed_hash` from hex string to bytes. If `seed_hash` is undefined, calling `.length` on it throws the error.
+
+**Commits**:
+- `5e7fe25` - Initial fix to `broadcastJob()`
+- `2819d65` - Complete fix for all 3 job send paths
+
+---
+
+## 📁 File Structure & Responsibilities
+
+### Frontend Files (Root Directory)
+
+| File | Purpose |
+|------|---------|
+| `index.html` | Main entry point - redirects or shows basic UI |
+| `miner.html` | **Main mining interface** - dashboard, controls, stats display |
+| `index.js` | Bundled miner library (minified) - contains `WRXMiner` class |
+| `178.js` | **RandomX WASM Worker** - actual mining happens here |
+| `styles.css` | UI styling |
+| `config.js` | Configuration (wallet, proxy URL, pool settings) |
+
+### Worker File (`178.js`) - Critical Understanding
+
+This is a **minified Web Worker** that runs the RandomX algorithm in WebAssembly. Key methods:
+
+```javascript
+// Pseudocode of what 178.js does internally:
+class RandomXWorker {
+  hexToBytes(hexString) {
+    // Converts hex string to Uint8Array
+    // THROWS ERROR if hexString is undefined!
+    const bytes = new Uint8Array(hexString.length / 2);
+    // ...
+  }
+  
+  setJob(job) {
+    // Called when new job received
+    const blobBytes = this.hexToBytes(job.blob);        // 152 chars
+    const seedBytes = this.hexToBytes(job.seed_hash);   // 64 chars - REQUIRED!
+    const targetBytes = this.hexToBytes(job.target);    // 8 chars
+    
+    // Initialize RandomX with seed_hash
+    this.initRandomX(seedBytes);
+    
+    // Start mining
+    this.mine(blobBytes, targetBytes);
+  }
+  
+  onMessage(event) {
+    // Receives job from main thread
+    this.setJob(event.data);
+  }
+}
+```
+
+### Proxy Server (`proxy/server.js`)
+
+2300+ line Node.js server handling:
+
+| Section | Lines (approx) | Purpose |
+|---------|----------------|---------|
+| Configuration | 1-100 | Pool settings, wallet, ports |
+| Pool Connection | 200-400 | TCP connection to mining pool |
+| Job Handling | 400-450 | `handlePoolMessage()`, `broadcastJob()` |
+| WebSocket Server | 1200-1450 | Browser connections, message routing |
+| Dashboard | 500-800 | `/stats` page, API endpoints |
+| Auto-difficulty | 800-1000 | Hashrate-based difficulty adjustment |
+
+---
+
+## 🔄 Data Flow
+
+### 1. Pool → Proxy (Stratum Protocol)
+
+Pool sends jobs via JSON-RPC:
+
+```json
+// Login response with first job
+{
+  "id": 1,
+  "result": {
+    "id": "worker_id_12345",
+    "job": {
+      "job_id": "abc123",
+      "blob": "0e0e...(152 hex chars)",
+      "target": "b88d0600",
+      "seed_hash": "491c63...(64 hex chars)",
+      "height": 3574950,
+      "algo": "rx/0"
+    }
+  }
+}
+
+// New job notification
+{
+  "method": "job",
+  "params": {
+    "job_id": "def456",
+    "blob": "...",
+    "target": "...",
+    "seed_hash": "...",
+    "height": 3574951,
+    "algo": "rx/0"
+  }
+}
+```
+
+### 2. Proxy → Browser (WebSocket)
+
+Proxy forwards to miners:
+
+```json
+// Authentication confirmed
+{ "type": "authed", "params": { "hashes": 0 } }
+
+// Job to mine
+{
+  "type": "job",
+  "params": {
+    "job_id": "abc123",
+    "blob": "...",
+    "target": "...",
+    "seed_hash": "...",    // ⚠️ CRITICAL - must be included!
+    "height": 3574950,
+    "algo": "rx/0"
+  }
+}
+
+// Share accepted
+{ "type": "hash_accepted", "params": { "hashes": 1 } }
+```
+
+### 3. Browser → Proxy (WebSocket)
+
+Browser sends:
+
+```json
+// Submit found share
+{
+  "type": "submit",
+  "params": {
+    "job_id": "abc123",
+    "nonce": "a1b2c3d4",
+    "result": "0000000..."
+  }
+}
+
+// Hashrate update (optional)
+{ "type": "hashrate", "params": { "rate": 25.5 } }
+
+// Keep-alive
+{ "type": "ping" }
+```
+
+### 4. Proxy → Pool (Stratum)
+
+```json
+// Submit share
+{
+  "id": 2,
+  "method": "submit",
+  "params": {
+    "id": "worker_id_12345",
+    "job_id": "abc123",
+    "nonce": "a1b2c3d4",
+    "result": "0000000..."
+  }
+}
+```
+
+---
+
+## ⚠️ Common Issues & Solutions
+
+### Issue: "Cannot read properties of undefined (reading 'length')"
+
+**Cause**: Job data missing required fields (`blob`, `seed_hash`, or `target`)
+
+**Solution**: Check ALL places that send jobs to miners and ensure they include:
+- `job_id`
+- `blob`
+- `target`
+- `seed_hash` ← Most commonly missing!
+- `height`
+- `algo`
+
+**Debug**: Add logging to see what's being sent:
+```javascript
+console.log('Sending job:', JSON.stringify(msg.params));
+```
+
+### Issue: Mining but 0 Accepted Shares
+
+**Possible Causes**:
+1. **Wrong difficulty** - Target too hard for hashrate
+2. **Stale shares** - Job changed before share submitted
+3. **Invalid nonce** - Worker computing incorrectly
+
+**Solution**: 
+- Use auto-difficulty (port 10001 or 10128)
+- Check pool logs for rejection reasons
+- Verify worker is using correct algo (rx/0)
+
+### Issue: WebSocket Disconnects
+
+**Causes**:
+1. Proxy restart/redeploy
+2. Network issues
+3. Browser tab inactive (throttled)
+
+**Solution**: The miner has auto-reconnect built in:
+```javascript
+this._autoReconnect = true;
+this._reconnectRetry = 3; // seconds
+```
+
+### Issue: Pool Connection Drops
+
+**Cause**: Pool might suspend IP for too many invalid shares
+
+**Solution**: Built-in suspension handler with 11-minute cooloff:
+```javascript
+function handleIPSuspension() {
+  globalStats.suspended = true;
+  globalStats.suspensionEndTime = Date.now() + (11 * 60 * 1000);
+  // ...
+}
+```
+
+---
+
+## 📡 API Reference
+
+### WebSocket Messages (Browser ↔ Proxy)
+
+#### From Proxy to Browser
+
+| Type | Params | Description |
+|------|--------|-------------|
+| `authed` | `{ hashes: number }` | Authentication confirmed |
+| `job` | `{ job_id, blob, target, seed_hash, height, algo }` | New job to mine |
+| `hash_accepted` | `{ hashes: number }` | Share accepted by pool |
+| `error` | `{ error: string }` | Error message |
+| `banned` | `{ banned: boolean }` | IP banned by pool |
+| `command` | `{ action: string, ... }` | Control commands |
+| `pong` | `{}` | Response to ping |
+
+#### From Browser to Proxy
+
+| Type | Params | Description |
+|------|--------|-------------|
+| `auth` | `{ user?: string }` | Request authentication |
+| `submit` | `{ job_id, nonce, result }` | Submit found share |
+| `hashrate` | `{ rate: number }` | Report current hashrate |
+| `info` | `{ cores, threads, status }` | Report miner info |
+| `ping` | `{}` | Keep-alive ping |
+
+### HTTP Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Main mining page |
+| `/miner.html` | GET | Alternative mining page |
+| `/stats` | GET | Dashboard HTML |
+| `/api/stats` | GET | Stats JSON |
+| `/health` | GET | Health check (returns 200) |
+| `/proxy` | WS | WebSocket endpoint |
+
+---
+
+## 🛠️ Development Guide
+
+### Local Development
+
+```bash
+cd proxy
+npm install
+npm start
+# Server runs on http://localhost:8892
+```
+
+### Testing WebSocket Connection
+
+```javascript
+// Quick test script
+const WebSocket = require('ws');
+const ws = new WebSocket('ws://localhost:8892/proxy');
+
+ws.on('message', (data) => {
+  const msg = JSON.parse(data);
+  console.log('Received:', msg.type, msg.params);
+});
+
+ws.on('open', () => {
+  ws.send(JSON.stringify({ type: 'auth', params: {} }));
+});
+```
+
+### Adding New Features
+
+1. **New WebSocket message type**: 
+   - Add handler in `ws.on('message', ...)` block (~line 1344)
+   - Document in this file
+
+2. **New HTTP endpoint**:
+   - Add route before the catch-all static file handler
+   - Example: `if (pathname === '/myendpoint') { ... }`
+
+3. **Modify job handling**:
+   - ⚠️ Update ALL 3 job send locations!
+   - `broadcastJob()` function
+   - Connection handler
+   - Auth request handler
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 8892 | Server port |
+| `WALLET` | (hardcoded) | XMR wallet address |
+| `WORKER_NAME` | sirco-sub-pool-miners | Pool worker name |
+| `POOL_HOST` | gulf.moneroocean.stream | Pool hostname |
+| `POOL_PORT` | 10001 | Pool port |
+
+### Debugging Tips
+
+1. **Enable verbose logging**:
+   ```javascript
+   // Add to handlePoolMessage:
+   console.log('[Pool] Raw message:', JSON.stringify(msg));
+   ```
+
+2. **Test with local proxy**:
+   ```javascript
+   // In config.js, temporarily change:
+   wsServer: 'ws://localhost:8892'
+   ```
+
+3. **Check browser DevTools**:
+   - Network tab → WS → Messages
+   - Console for errors
+
+### Code Quality Checklist
+
+When making changes, verify:
+
+- [ ] All 3 job send paths include required fields
+- [ ] WebSocket messages are valid JSON
+- [ ] Error handling for edge cases
+- [ ] Logging for debugging
+- [ ] No hardcoded values that should be configurable
+
+---
+
+## 📚 References
+
+- [RandomX Algorithm](https://github.com/tevador/RandomX)
+- [Stratum Protocol](https://en.bitcoin.it/wiki/Stratum_mining_protocol)
+- [MoneroOcean Pool](https://moneroocean.stream)
+- [WebAssembly](https://webassembly.org/)
+
+---
+
+## 📝 Changelog
+
+### December 27, 2025
+
+- **Fixed**: `seed_hash` missing from job broadcasts causing worker crash
+- **Fixed**: All 3 job send paths now include complete RandomX job data
+- **Added**: Debug logging for job data verification
+- **Added**: This documentation file
+
+---
+
+*Last updated: December 27, 2025*

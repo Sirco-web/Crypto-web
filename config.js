@@ -13,7 +13,7 @@ const CONFIG = {
   // For Koyeb: wss://your-app-name.koyeb.app/proxy
   // For Render: wss://your-app-name.onrender.com/proxy
   // For local: ws://localhost:8892/proxy
-  PROXY_URL: 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app',
+  PROXY_URL: 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy',
   
   // Pool settings (configured on server side)
   POOL: 'gulf.moneroocean.stream:10128'

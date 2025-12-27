@@ -193,6 +193,20 @@ function submitToPool(params) {
     return false;
   }
   
+  if (!poolAuthenticated) {
+    console.log('[Pool] Cannot submit - not authenticated yet');
+    return false;
+  }
+  
+  // CRITICAL: Check if this share is for the CURRENT job
+  // Stale shares (old job_id) will get us kicked from the pool!
+  if (!currentJob || params.job_id !== currentJob.job_id) {
+    console.log('[Pool] ⚠️ Rejecting STALE share - job_id mismatch');
+    console.log(`[Pool]    Share job_id: ${params.job_id}`);
+    console.log(`[Pool]    Current job_id: ${currentJob ? currentJob.job_id : 'none'}`);
+    return false;
+  }
+  
   console.log('[Pool] Submitting share:', JSON.stringify(params));
   
   const msg = {

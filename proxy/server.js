@@ -1,17 +1,41 @@
 const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
+const fs = require('fs');
+const path = require('path');
 
-const WS_PORT = 8888;
+const WS_PORT = 8892;
 const POOL_HOST = 'gulf.moneroocean.stream';  // MoneroOcean - excellent vardiff
 const POOL_PORT = 10128;  // Low diff port for CPU mining
 const AUTH_PASS = 'x';
 
+// Path to lib files (relative to proxy folder)
+const LIB_PATH = path.join(__dirname, '..', 'lib');
+
 let stats = { clients: 0, totalHashes: 0, uptime: Date.now() };
 
-// Simple HTTP server
+// Simple HTTP server with static file serving for /miner/
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  
+  // Serve miner files from /miner/ path (CoinHive expects this)
+  if (req.url.startsWith('/miner/')) {
+    const filename = req.url.replace('/miner/', '');
+    const filePath = path.join(LIB_PATH, filename);
+    
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(filename);
+      const contentTypes = {
+        '.js': 'application/javascript',
+        '.wasm': 'application/wasm',
+        '.mem': 'application/octet-stream'
+      };
+      res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
+      res.writeHead(200);
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
   
   if (req.url === '/stats') {
     res.setHeader('Content-Type', 'application/json');

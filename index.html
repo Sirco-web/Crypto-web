@@ -23,6 +23,18 @@
     .log-entry.success { color: #00ff88; }
     .log-entry.warning { color: #ffaa00; }
     .log-entry.error { color: #ff4444; }
+    
+    /* Auto-tune UI */
+    .tune-status { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); border: 1px solid #30363d; border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; }
+    .tune-status .tune-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .tune-status .tune-title { font-size: 0.85rem; font-weight: bold; color: #58a6ff; }
+    .tune-status .tune-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; background: #238636; color: white; }
+    .tune-status .tune-badge.tuning { background: #9e6a03; animation: pulse 1s infinite; }
+    .tune-status .tune-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; font-size: 0.75rem; }
+    .tune-status .tune-item { text-align: center; }
+    .tune-status .tune-item .val { font-weight: bold; color: var(--accent); }
+    .tune-status .tune-item .lbl { color: var(--muted); }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   </style>
 </head>
 <body>
@@ -47,7 +59,7 @@
         <div class="stat-item"><div class="label">Workers</div><div class="value" id="sidebarThreads">0</div></div>
         <div class="stat-item"><div class="label">Uptime</div><div class="value" id="sidebarUptime">0:00</div></div>
         <hr class="divider">
-        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: SupportXMR<br>⚡ Real Mining Active</p></div>
+        <div class="info-section"><p style="font-size: 0.8rem; color: var(--muted);">Pool: MoneroOcean<br>⚡ Real Mining Active</p></div>
       </div>
     </aside>
 
@@ -68,6 +80,7 @@
             <div>
               <button id="startBtn" class="btn primary" disabled>Loading...</button>
               <button id="stopBtn" class="btn" disabled>Stop</button>
+              <button id="maxBtn" class="btn" style="background: linear-gradient(135deg, #ff6b35, #f7931a); border: none;" disabled>⚡ MAX POWER</button>
             </div>
             <div class="stat">
                <div class="k">Status</div>
@@ -90,31 +103,260 @@
           <div class="log-container" id="logContainer">
             <div class="log-entry info">Initializing miner...</div>
           </div>
+          
+          <div class="tune-status" id="tuneStatus">
+            <div class="tune-header">
+              <span class="tune-title">🔧 Auto-Tune</span>
+              <span class="tune-badge" id="tuneBadge">Detecting...</span>
+            </div>
+            <div class="tune-details">
+              <div class="tune-item"><div class="val" id="tuneDevice">-</div><div class="lbl">Device</div></div>
+              <div class="tune-item"><div class="val" id="tuneCores">-</div><div class="lbl">CPU Cores</div></div>
+              <div class="tune-item"><div class="val" id="tuneMemory">-</div><div class="lbl">Memory</div></div>
+            </div>
+          </div>
         </section>
       </div>
     </main>
   </div>
 
   <script>
-    const WALLET = '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL';
+    // =========================================================================
+    // DYNAMIC MINER LOADER - Patches hardcoded URLs at runtime
+    // =========================================================================
+    (async function() {
+      const LIB_URL = location.origin + '/lib/';
+      const WS_PLACEHOLDER = 'WS_URL_PLACEHOLDER';
+      
+      try {
+        // Fetch the miner script
+        const response = await fetch('lib/miner.min.js');
+        let code = await response.text();
+        
+        // Replace hardcoded localhost URLs with our dynamic URLs
+        code = code.replace(/http:\/\/localhost:8892\/miner\//g, LIB_URL);
+        code = code.replace(/http:\\\/\\\/localhost:8892\\\/miner\\\//g, LIB_URL.replace(/\//g, '\\/'));
+        
+        // Execute the patched code
+        const script = document.createElement('script');
+        script.textContent = code;
+        document.head.appendChild(script);
+        
+        console.log('[Miner Loader] Patched and loaded miner with LIB_URL:', LIB_URL);
+        
+        // Dispatch event when ready
+        window.dispatchEvent(new Event('minerLoaded'));
+      } catch (e) {
+        console.error('[Miner Loader] Failed to load miner:', e);
+      }
+    })();
+  </script>
+  
+  <script>
+    // =========================================================================
+    // YOUR WALLET ADDRESS
+    // =========================================================================
+    const WALLET = '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ';
+    const WORKER_NAME = 'web_miner';
     
-    // Proxy URL
+    // =========================================================================
+    // PROXY URL DETECTION
+    // =========================================================================
     const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
     let hostname = location.hostname;
     let proxyUrl = '';
 
     if (hostname.includes('-8080') && hostname.includes('github.dev')) {
-        hostname = hostname.replace('-8080', '-8888');
+        hostname = hostname.replace('-8080', '-8892');
+        proxyUrl = wsProtocol + hostname + '/proxy';
+    } else if (hostname.includes('.app.github.dev')) {
+        hostname = hostname.replace('-8080.', '-8892.');
         proxyUrl = wsProtocol + hostname + '/proxy';
     } else {
-        proxyUrl = wsProtocol + hostname + ':8888/proxy';
+        proxyUrl = wsProtocol + hostname + ':8892/proxy';
     }
     
+    // =========================================================================
+    // HELPERS
+    // =========================================================================
     const $ = id => document.getElementById(id);
-    let workers = [];
-    let startTime = null, uptimeInterval = null;
-    let workerStats = {}; // Track stats per worker
+    let miner = null;
+    let startTime = null, uptimeInterval = null, statsInterval = null, tuneInterval = null;
     let totalAccepted = 0;
+    
+    // =========================================================================
+    // HARDWARE DETECTION & AUTO-TUNING SYSTEM
+    // =========================================================================
+    const autoTune = {
+      // Hardware info
+      cores: navigator.hardwareConcurrency || 4,
+      memory: navigator.deviceMemory || 4, // GB (may be undefined)
+      isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+      isLowPower: false,
+      
+      // Current settings
+      threads: 4,
+      throttle: 0,
+      
+      // Tuning state
+      isOptimizing: false,
+      samples: [],
+      bestHashrate: 0,
+      bestConfig: null,
+      tunePhase: 0,
+      
+      // Detect hardware and set initial config
+      detect() {
+        // Check for low-power indicators
+        this.isLowPower = this.isMobile || this.cores <= 2 || (this.memory && this.memory <= 2);
+        
+        // Check battery status if available
+        if (navigator.getBattery) {
+          navigator.getBattery().then(battery => {
+            if (!battery.charging && battery.level < 0.3) {
+              this.isLowPower = true;
+              log('🔋 Low battery detected - using power-saving mode', 'warning');
+            }
+          }).catch(() => {});
+        }
+        
+        // Set initial thread count based on hardware
+        if (this.isMobile) {
+          // Mobile: use fewer cores, leave headroom
+          this.threads = Math.max(1, Math.min(this.cores - 1, 4));
+          this.throttle = 0.3; // 30% throttle on mobile
+        } else if (this.isLowPower) {
+          // Low-power device
+          this.threads = Math.max(1, this.cores - 1);
+          this.throttle = 0.2;
+        } else {
+          // Desktop: use most cores
+          this.threads = Math.max(2, Math.min(this.cores - 1, 16));
+          this.throttle = 0;
+        }
+        
+        // Update UI
+        $('tuneDevice').textContent = this.isMobile ? '📱 Mobile' : '💻 Desktop';
+        $('tuneCores').textContent = this.cores;
+        $('tuneMemory').textContent = this.memory ? this.memory + ' GB' : 'Unknown';
+        $('tuneBadge').textContent = 'Detected';
+        $('tuneBadge').classList.remove('tuning');
+        
+        log('🔧 Hardware: ' + this.cores + ' cores, ' + (this.memory || '?') + 'GB RAM, ' + (this.isMobile ? 'Mobile' : 'Desktop'), 'info');
+        log('⚙️ Initial config: ' + this.threads + ' threads, ' + (this.throttle * 100) + '% throttle', 'info');
+        
+        return { threads: this.threads, throttle: this.throttle };
+      },
+      
+      // Start auto-optimization (runs while mining)
+      startOptimization(minerInstance) {
+        if (this.isOptimizing) return;
+        this.isOptimizing = true;
+        this.samples = [];
+        this.tunePhase = 0;
+        this.bestHashrate = 0;
+        this.bestConfig = { threads: this.threads, throttle: this.throttle };
+        
+        $('tuneBadge').textContent = 'Optimizing...';
+        $('tuneBadge').classList.add('tuning');
+        log('🔄 Starting auto-optimization...', 'info');
+        
+        // Sample hashrate every 5 seconds
+        let sampleCount = 0;
+        const maxSamples = 6; // 30 seconds per config
+        
+        tuneInterval = setInterval(() => {
+          if (!minerInstance || !minerInstance.isRunning()) {
+            this.stopOptimization();
+            return;
+          }
+          
+          const currentHashrate = minerInstance.getHashesPerSecond();
+          this.samples.push(currentHashrate);
+          sampleCount++;
+          
+          // After collecting enough samples, evaluate and adjust
+          if (sampleCount >= maxSamples) {
+            const avgHashrate = this.samples.reduce((a, b) => a + b, 0) / this.samples.length;
+            log('📊 Avg hashrate: ' + avgHashrate.toFixed(2) + ' H/s (threads: ' + this.threads + ', throttle: ' + (this.throttle * 100).toFixed(0) + '%)', 'info');
+            
+            // Check if this config is better
+            if (avgHashrate > this.bestHashrate) {
+              this.bestHashrate = avgHashrate;
+              this.bestConfig = { threads: this.threads, throttle: this.throttle };
+            }
+            
+            // Try different configurations
+            this.tunePhase++;
+            this.samples = [];
+            sampleCount = 0;
+            
+            if (this.tunePhase === 1) {
+              // Try more threads
+              const newThreads = Math.min(this.cores, this.threads + 2);
+              if (newThreads !== this.threads) {
+                this.threads = newThreads;
+                minerInstance.setNumThreads(this.threads);
+                $('threads').textContent = this.threads;
+                $('sidebarThreads').textContent = this.threads;
+                log('🔧 Testing ' + this.threads + ' threads...', 'info');
+              } else {
+                this.tunePhase++; // Skip to next phase
+              }
+            }
+            
+            if (this.tunePhase === 2) {
+              // Try fewer threads
+              const newThreads = Math.max(1, this.bestConfig.threads - 1);
+              if (newThreads !== this.threads) {
+                this.threads = newThreads;
+                minerInstance.setNumThreads(this.threads);
+                $('threads').textContent = this.threads;
+                $('sidebarThreads').textContent = this.threads;
+                log('🔧 Testing ' + this.threads + ' threads...', 'info');
+              } else {
+                this.tunePhase++;
+              }
+            }
+            
+            if (this.tunePhase === 3) {
+              // Try reducing throttle (if any)
+              if (this.throttle > 0) {
+                this.throttle = Math.max(0, this.throttle - 0.1);
+                minerInstance.setThrottle(this.throttle);
+                log('🔧 Testing ' + (this.throttle * 100).toFixed(0) + '% throttle...', 'info');
+              } else {
+                this.tunePhase++;
+              }
+            }
+            
+            if (this.tunePhase >= 4) {
+              // Optimization complete - apply best config
+              this.threads = this.bestConfig.threads;
+              this.throttle = this.bestConfig.throttle;
+              minerInstance.setNumThreads(this.threads);
+              minerInstance.setThrottle(this.throttle);
+              
+              $('threads').textContent = this.threads;
+              $('sidebarThreads').textContent = this.threads;
+              $('tuneBadge').textContent = 'Optimized ✓';
+              $('tuneBadge').classList.remove('tuning');
+              
+              log('✅ Optimization complete! Best: ' + this.threads + ' threads @ ' + this.bestHashrate.toFixed(2) + ' H/s', 'success');
+              this.stopOptimization();
+            }
+          }
+        }, 5000);
+      },
+      
+      stopOptimization() {
+        if (tuneInterval) {
+          clearInterval(tuneInterval);
+          tuneInterval = null;
+        }
+        this.isOptimizing = false;
+      }
+    };
     
     function log(msg, type = 'info') {
       const entry = document.createElement('div');
@@ -135,15 +377,21 @@
     function updateUptime() { if (startTime) $('sidebarUptime').textContent = fmtUptime(Date.now() - startTime); }
     
     function detectEngine() {
-      $('engineName').textContent = 'CryptoNight JS/WASM';
+      const hasWasm = typeof WebAssembly !== 'undefined';
+      $('engineName').textContent = hasWasm ? 'CryptoNight WASM' : 'CryptoNight ASM.js';
       $('sidebarAlgo').textContent = 'CryptoNight';
-      $('engineBanner').classList.add('wasm');
-      $('engineSub').textContent = 'Real Mining Engine';
+      $('engineBanner').classList.add(hasWasm ? 'wasm' : 'js');
+      $('engineSub').textContent = hasWasm ? 'WebAssembly Mining Engine' : 'ASM.js Mining Engine';
     }
     
+    // =========================================================================
+    // MINING CONTROLS
+    // =========================================================================
     function startMining() {
-      const numWorkers = navigator.hardwareConcurrency || 4;
-      log('Starting ' + numWorkers + ' workers...', 'info');
+      // Auto-detect hardware and get optimal settings
+      const config = autoTune.detect();
+      
+      log('Starting miner with ' + config.threads + ' threads...', 'info');
       log('Proxy: ' + proxyUrl, 'info');
       
       startTime = Date.now();
@@ -152,93 +400,177 @@
       $('startBtn').disabled = true; 
       $('startBtn').textContent = 'Mining...'; 
       $('stopBtn').disabled = false;
-      $('status').textContent = 'Starting...';
+      $('maxBtn').disabled = false;
+      $('maxBtn').textContent = '⚡ MAX POWER';
+      $('status').textContent = 'Connecting...';
       $('status').style.color = '#ffaa00';
       
-      // Create workers
-      for (let i = 0; i < numWorkers; i++) {
-        const worker = new Worker('worker.js');
-        workers.push(worker);
-        
-        worker.onmessage = function(e) {
-          const msg = e.data;
-          
-          if (msg.type === 'status') {
-            $('status').textContent = msg.message;
-            if (msg.message.includes('Mining')) $('status').style.color = '#00ff88';
-            log(msg.message, 'info');
-          }
-          else if (msg.type === 'engine') {
-            $('engineName').textContent = msg.value;
-            $('sidebarAlgo').textContent = msg.value;
-          }
-          else if (msg.type === 'progress') {
-            // Track this worker's stats
-            workerStats[i] = { hashRate: msg.hashRate || 0, totalHashes: msg.totalHashes || 0 };
-            
-            // Aggregate across all workers
-            let totalHashRate = 0, totalHashes = 0;
-            Object.values(workerStats).forEach(s => { totalHashRate += s.hashRate; totalHashes += s.totalHashes; });
-            
-            $('hashrate').textContent = fmtNum(totalHashRate);
-            $('sidebarHashrate').textContent = fmtNum(totalHashRate) + ' H/s';
-            $('totalHashes').textContent = fmtNum(totalHashes);
-            $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
-            $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
-            $('barText').textContent = 'Mining: ' + fmtNum(totalHashRate) + ' H/s';
-          }
-          else if (msg.type === 'accepted') {
-            totalAccepted++;
-            $('acceptedShares').textContent = totalAccepted;
-            $('sidebarAccepted').textContent = totalAccepted;
-            log('✅ Share Accepted! Total: ' + totalAccepted, 'success');
-          }
-          else if (msg.type === 'rejected') {
-            log('Share Rejected: ' + (msg.error || 'Unknown'), 'error');
-          }
-          else if (msg.type === 'error') {
-            log('Error: ' + msg.message, 'error');
-          }
-        };
-        
-        worker.postMessage({
-          type: 'start',
-          pool: proxyUrl,
-          wallet: WALLET,
-          intensity: 100  // Lower for browser stability
+      try {
+        // Create CoinHive miner with auto-tuned settings
+        miner = new CoinHive.User(WALLET, WORKER_NAME, {
+          threads: config.threads,
+          autoThreads: false,
+          throttle: config.throttle,
+          forceASMJS: false
         });
+        
+        // Event handlers
+        miner.on('found', () => {
+          log('💎 Share found!', 'success');
+        });
+        
+        miner.on('accepted', () => {
+          totalAccepted++;
+          $('acceptedShares').textContent = totalAccepted;
+          $('sidebarAccepted').textContent = totalAccepted;
+          log('✅ Share accepted! Total: ' + totalAccepted, 'success');
+        });
+        
+        miner.on('error', (params) => {
+          log('❌ Error: ' + (params.error || JSON.stringify(params)), 'error');
+        });
+        
+        miner.on('authed', (params) => {
+          log('✓ Authenticated with pool', 'success');
+          $('status').textContent = 'Mining';
+          $('status').style.color = '#00ff88';
+          
+          // Start auto-optimization after 10 seconds of mining
+          setTimeout(() => {
+            if (miner && miner.isRunning()) {
+              autoTune.startOptimization(miner);
+            }
+          }, 10000);
+        });
+        
+        miner.on('open', () => {
+          log('Connected to proxy', 'success');
+        });
+        
+        miner.on('close', () => {
+          log('Disconnected from proxy', 'warning');
+          $('status').textContent = 'Disconnected';
+          $('status').style.color = '#ff4444';
+        });
+        
+        miner.on('job', (params) => {
+          log('⛏️ New job received', 'info');
+        });
+        
+        // Start mining
+        miner.start(CoinHive.FORCE_MULTI_TAB);
+        
+        // Stats update loop
+        statsInterval = setInterval(() => {
+          if (miner && miner.isRunning()) {
+            const hashrate = miner.getHashesPerSecond();
+            const total = miner.getTotalHashes();
+            const threads = miner.getNumThreads();
+            
+            $('hashrate').textContent = fmtNum(hashrate);
+            $('sidebarHashrate').textContent = fmtNum(hashrate) + ' H/s';
+            $('totalHashes').textContent = fmtNum(total);
+            $('sidebarTotalHashes').textContent = fmtNum(total);
+            $('threads').textContent = threads;
+            $('sidebarThreads').textContent = threads;
+            $('barFill').style.width = ((total % 1000) / 10) + '%';
+            $('barText').textContent = 'Mining: ' + fmtNum(hashrate) + ' H/s';
+          }
+        }, 1000);
+        
+        $('threads').textContent = config.threads;
+        $('sidebarThreads').textContent = config.threads;
+        
+      } catch (e) {
+        log('Failed to start: ' + e.message, 'error');
+        $('status').textContent = 'Error';
+        $('status').style.color = '#ff4444';
       }
-      
-      $('threads').textContent = numWorkers;
-      $('sidebarThreads').textContent = numWorkers;
     }
     
     function stopMining() {
       log('Stopping...', 'warning');
-      workers.forEach(w => { w.postMessage({ type: 'stop' }); w.terminate(); });
-      workers = [];
-      workerStats = {};
-      totalAccepted = 0;
-      if (uptimeInterval) clearInterval(uptimeInterval);
+      
+      // Stop auto-tuning
+      autoTune.stopOptimization();
+      
+      if (miner) {
+        miner.stop();
+        miner = null;
+      }
+      
+      if (uptimeInterval) { clearInterval(uptimeInterval); uptimeInterval = null; }
+      if (statsInterval) { clearInterval(statsInterval); statsInterval = null; }
+      
       $('startBtn').disabled = false; 
       $('startBtn').textContent = 'Start Mining'; 
       $('stopBtn').disabled = true;
+      $('maxBtn').disabled = true;
       $('status').textContent = 'Stopped'; 
       $('status').style.color = '#ff4444';
+      $('tuneBadge').textContent = 'Stopped';
+      $('tuneBadge').classList.remove('tuning');
+      
+      log('Mining stopped', 'warning');
     }
     
+    // MAX POWER MODE - Use all CPU resources
+    function enableMaxPower() {
+      if (!miner || !miner.isRunning()) return;
+      
+      const maxThreads = autoTune.cores; // Use ALL cores
+      
+      // Stop any ongoing optimization
+      autoTune.stopOptimization();
+      
+      // Set maximum performance
+      miner.setNumThreads(maxThreads);
+      miner.setThrottle(0); // No throttle
+      
+      autoTune.threads = maxThreads;
+      autoTune.throttle = 0;
+      
+      $('threads').textContent = maxThreads;
+      $('sidebarThreads').textContent = maxThreads;
+      $('tuneBadge').textContent = '⚡ MAX POWER';
+      $('tuneBadge').classList.remove('tuning');
+      $('maxBtn').textContent = '⚡ MAXED OUT';
+      $('maxBtn').disabled = true;
+      
+      log('⚡ MAX POWER MODE: Using ALL ' + maxThreads + ' CPU cores!', 'warning');
+      log('⚠️ System may become less responsive', 'warning');
+    }
+    
+    // =========================================================================
+    // INITIALIZATION
+    // =========================================================================
     function init() { 
-        detectEngine();
-        $('startBtn').disabled = false; 
-        $('startBtn').textContent = 'Start Mining'; 
-        $('status').textContent = 'Ready'; 
-        log('CryptoNight miner ready!', 'success'); 
-        log('Proxy: ' + proxyUrl, 'info');
+      detectEngine();
+      
+      if (typeof CoinHive === 'undefined') {
+        log('Waiting for miner library...', 'info');
+        $('status').textContent = 'Loading...';
+        // Wait for dynamic loader
+        window.addEventListener('minerLoaded', init);
+        return;
+      }
+      
+      // Configure CoinHive
+      CoinHive.CONFIG.WEBSOCKET_SHARDS = [[proxyUrl]];
+      CoinHive.CONFIG.LIB_URL = location.origin + '/lib/';
+      console.log('[Miner] Configured - LIB_URL:', CoinHive.CONFIG.LIB_URL, 'WS:', proxyUrl);
+      
+      $('startBtn').disabled = false; 
+      $('startBtn').textContent = 'Start Mining'; 
+      $('status').textContent = 'Ready'; 
+      log('CryptoNight miner ready!', 'success'); 
+      log('Proxy: ' + proxyUrl, 'info');
     }
     
     $('agreeBtn').addEventListener('click', () => { $('warningModal').style.display = 'none'; startMining(); });
     $('startBtn').addEventListener('click', startMining);
     $('stopBtn').addEventListener('click', stopMining);
+    $('maxBtn').addEventListener('click', enableMaxPower);
     window.addEventListener('load', init);
   </script>
 </body>

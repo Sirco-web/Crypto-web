@@ -107,8 +107,8 @@
           <div class="stats-grid">
             <div class="stat-box"><div class="value" id="rate">0.0 H/s</div><div class="label">H/s</div></div>
             <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
-            <div class="stat-box"><div class="value" id="acceptedShares">0</div><div class="label">Accepted</div></div>
-            <div class="stat-box"><div class="value" id="threads">0</div><div class="label">Workers</div></div>
+            <div class="stat-box"><div class="value" id="accepted">0</div><div class="label">Accepted</div></div>
+            <div class="stat-box"><div class="value" id="thread">0</div><div class="label">Workers</div></div>
           </div>
           
           <div class="progress-bar">
@@ -406,12 +406,16 @@
     function init() {
       hardwareInfo.detect();
       
-      // Check if Vectra miner loaded (it doesn't expose knowingtogood)
-      // We assume it's ready if the script loaded.
+      // Vectra miner starts automatically on load
       log('RandomX miner ready!', 'success');
-      $('startBtn').disabled = true; // Vectra auto-starts
+      $('startBtn').disabled = true; 
       $('startBtn').textContent = 'Auto-Mining';
       $('status').textContent = 'Initializing...';
+      
+      // Start Uptime Counter immediately
+      startTime = Date.now();
+      uptimeInterval = setInterval(updateUptime, 1000);
+      isMining = true;
     }
     
     // Event listeners
@@ -434,12 +438,18 @@
     setInterval(() => {
         const rateElement = document.getElementById('rate');
         const totalElement = document.getElementById('total');
+        const acceptedElement = document.getElementById('accepted');
+        const threadElement = document.getElementById('thread');
         
         const rate = rateElement ? rateElement.innerText : '0 H/s';
         const total = totalElement ? totalElement.innerText : '0';
+        const accepted = acceptedElement ? acceptedElement.innerText : '0';
+        const threads = threadElement ? threadElement.innerText : '0';
         
         if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
         if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
+        if(document.getElementById('sidebarAccepted')) document.getElementById('sidebarAccepted').innerText = accepted;
+        if(document.getElementById('sidebarThreads')) document.getElementById('sidebarThreads').innerText = threads;
         
         // Update status
         if(parseFloat(rate) > 0) {

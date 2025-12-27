@@ -263,11 +263,12 @@ def on_control_message(ws_conn, message):
         
         if msg.get('type') == 'command':
             action = msg.get('action', '')
-            print(f"📡 Remote command: {action}")
+            reason = msg.get('reason', '')
+            print(f"📡 Remote command: {action} {f'({reason})' if reason else ''}")
             
             if action == 'stop':
                 mining_active = False
-                print("⏸️ Mining stopped by remote command")
+                print(f"⏸️ Mining stopped by remote command {f'- {reason}' if reason else ''}")
             
             elif action == 'start':
                 mining_active = True

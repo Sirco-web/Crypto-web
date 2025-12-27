@@ -149,7 +149,7 @@ let lastUsedDifficulty = 10000;
 
 // Auto-adjust difficulty every 2 minutes when in auto mode
 setInterval(() => {
-  if (!CONFIG.pool.autoMode) return;
+  if (!CONFIG.pool.autoMode || globalStats.suspended) return;
   
   const optimalDiff = calculateOptimalDifficulty();
   const diffChange = Math.abs(optimalDiff - lastUsedDifficulty) / lastUsedDifficulty;
@@ -217,6 +217,13 @@ let minerId = 0;
 
 function connectToPool() {
   if (sharedPool) return;
+  
+  // Check suspension
+  if (globalStats.suspended) {
+    const remaining = Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000 / 60);
+    console.log(`[Pool] ⛔ Suspended. Waiting ${remaining}m before reconnecting...`);
+    return;
+  }
   
   console.log(`[Pool] Connecting to ${CONFIG.pool.host}:${CONFIG.pool.port}...`);
   
@@ -311,12 +318,63 @@ function handlePoolMessage(msg) {
   else if (msg.id && msg.error) {
     globalStats.rejectedShares++;
     console.log('[Pool] ❌ Share rejected:', msg.error.message);
+    
+    // Check for IP suspension
+    if (msg.error.message && msg.error.message.includes('temporarily suspended')) {
+      handleIPSuspension();
+    }
+    
     broadcastToMiners({ type: 'error', params: { error: msg.error.message } });
   }
 }
 
+// Handle IP suspension
+function handleIPSuspension() {
+  console.log('\n[Pool] ⛔ CRITICAL: IP SUSPENDED BY POOL');
+  console.log('[Pool] Initiating 11-minute cool-off period to prevent ban...');
+  
+  globalStats.suspended = true;
+  globalStats.suspensionEndTime = Date.now() + (11 * 60 * 1000); // 11 minutes
+  
+  // Disconnect from pool
+  if (sharedPool) {
+    sharedPool.destroy();
+    sharedPool = null;
+  }
+  poolConnected = false;
+  poolAuthenticated = false;
+  
+  // Tell all miners to stop
+  broadcastToMiners({ 
+    type: 'command', 
+    action: 'stop', 
+    reason: 'Pool suspended IP - Cooling off for 11m' 
+  });
+  
+  // Schedule reconnection
+  setTimeout(() => {
+    console.log('[Pool] 🟢 Suspension cool-off complete. Resuming operations...');
+    globalStats.suspended = false;
+    globalStats.suspensionEndTime = 0;
+    connectToPool();
+    
+    // Tell miners to start
+    broadcastToMiners({ 
+      type: 'command', 
+      action: 'start', 
+      reason: 'Suspension lifted' 
+    });
+  }, 11 * 60 * 1000);
+}
+
 // Reconnect to pool (used when settings change)
 function reconnectPool() {
+  if (globalStats.suspended) {
+    const remaining = Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000 / 60);
+    console.log(`[Pool] ⚠️ Cannot reconnect yet - IP suspended. ${remaining}m remaining.`);
+    return;
+  }
+
   if (sharedPool) {
     sharedPool.destroy();
     sharedPool = null;
@@ -490,6 +548,8 @@ const server = http.createServer((req, res) => {
         host: CONFIG.pool.host,
         port: CONFIG.pool.port,
         connected: poolConnected,
+        suspended: globalStats.suspended,
+        suspensionRemaining: globalStats.suspended ? Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000) : 0,
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),
         workerName: CONFIG.pool.workerName,
         autoMode: CONFIG.pool.autoMode,
@@ -2003,6 +2063,9 @@ function generateDashboardHTML() {
         <strong>Worker:</strong> ${CONFIG.pool.workerName}<br>
         <strong>Wallet:</strong> ${CONFIG.pool.wallet.slice(0, 12)}...${CONFIG.pool.wallet.slice(-8)}
       </p>
+      <div id="suspensionAlert" style="display: none; background: #f85149; color: white; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; text-align: center; font-weight: bold;">
+        ⛔ IP SUSPENDED - Cooling off for <span id="suspensionTimer">0</span>s
+      </div>
     </div>
     
     <div class="card" style="margin-top: 1.5rem;">
@@ -2059,6 +2122,15 @@ function generateDashboardHTML() {
         document.getElementById('blocksFound').textContent = data.mining.blocksFound;
         document.getElementById('poolStatus').innerHTML = '<span style="color: ' + (data.pool.connected ? '#3fb950' : '#f85149') + '">' + (data.pool.connected ? '● Connected' : '○ Disconnected') + '</span>';
         document.getElementById('uptime').textContent = data.server.uptimeFormatted;
+        
+        // Handle suspension alert
+        const suspensionAlert = document.getElementById('suspensionAlert');
+        if (data.pool.suspended) {
+          suspensionAlert.style.display = 'block';
+          document.getElementById('suspensionTimer').textContent = data.pool.suspensionRemaining;
+        } else {
+          suspensionAlert.style.display = 'none';
+        }
         
         // Update miners table
         const tbody = document.getElementById('minersTableBody');

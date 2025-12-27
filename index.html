@@ -720,11 +720,16 @@
     }
     
     function handleRemoteCommand(action, msg) {
-      log('📡 Remote command: ' + action, 'warning');
+      log('📡 Remote command: ' + action + (msg.reason ? ' (' + msg.reason + ')' : ''), 'warning');
       
       switch(action) {
         case 'stop':
           stopMining();
+          if (msg.reason) {
+            document.getElementById('barText').textContent = '⛔ ' + msg.reason;
+            document.getElementById('barFill').style.width = '0%';
+            document.getElementById('barFill').style.background = '#f85149';
+          }
           sendMinerInfo();
           break;
           

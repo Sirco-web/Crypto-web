@@ -398,6 +398,15 @@ wss.on('connection', (ws, req) => {
     connectToPool();
   }
   
+  // Keep-alive ping every 20 seconds to prevent Koyeb/cloud timeout
+  const keepAlive = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    } else {
+      clearInterval(keepAlive);
+    }
+  }, 20000);
+  
   // Send current job if available
   if (poolConnected && currentJob) {
     ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
@@ -415,6 +424,9 @@ wss.on('connection', (ws, req) => {
     try {
       const msg = JSON.parse(data);
       const miner = globalStats.activeMiners.get(clientId);
+      
+      // Update lastUpdate on ANY message to prevent stale detection
+      if (miner) miner.lastUpdate = Date.now();
       
       if (msg.type === 'auth') {
         console.log(`[Miner #${clientId}] Auth request`);
@@ -456,55 +468,79 @@ wss.on('connection', (ws, req) => {
   });
   
   ws.on('close', () => {
+    clearInterval(keepAlive);
     globalStats.activeMiners.delete(clientId);
     console.log(`[Miner #${clientId}] Disconnected (${globalStats.activeMiners.size} active)`);
   });
   
   ws.on('error', (err) => {
     console.error(`[Miner #${clientId}] Error:`, err.message);
+    clearInterval(keepAlive);
     globalStats.activeMiners.delete(clientId);
   });
   
   // Ping to keep connection alive and detect dead clients
   ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('pong', () => { 
+    ws.isAlive = true;
+    // Update lastUpdate on pong to prevent stale detection
+    const miner = globalStats.activeMiners.get(clientId);
+    if (miner) miner.lastUpdate = Date.now();
+  });
 });
 
 // =============================================================================
-// CLEANUP STALE CONNECTIONS - Remove ghost clients
+// CLEANUP STALE CONNECTIONS - Remove ghost/dead clients
 // =============================================================================
 setInterval(() => {
   const now = Date.now();
-  const staleTimeout = 30000; // 30 seconds without update = stale
+  const staleTimeout = 60000; // 1 minute without activity = stale
+  let removed = 0;
   
   for (const [id, miner] of globalStats.activeMiners) {
-    // Check if WebSocket is still open
-    if (!miner.ws || miner.ws.readyState !== WebSocket.OPEN) {
-      console.log(`[Cleanup] Removing dead miner #${id}`);
-      globalStats.activeMiners.delete(id);
-      continue;
+    let shouldRemove = false;
+    let reason = '';
+    
+    // Check 1: WebSocket doesn't exist or is closed/closing
+    if (!miner.ws || miner.ws.readyState === WebSocket.CLOSED || miner.ws.readyState === WebSocket.CLOSING) {
+      shouldRemove = true;
+      reason = 'socket closed';
+    }
+    // Check 2: Ping/pong failed (no response to previous ping)
+    else if (miner.ws.isAlive === false) {
+      shouldRemove = true;
+      reason = 'ping timeout';
+    }
+    // Check 3: No activity for staleTimeout period
+    else if ((now - miner.lastUpdate) > staleTimeout) {
+      shouldRemove = true;
+      reason = 'inactive';
     }
     
-    // Ping to check if alive
-    if (miner.ws.isAlive === false) {
-      console.log(`[Cleanup] Miner #${id} not responding, removing`);
-      miner.ws.terminate();
+    if (shouldRemove) {
+      console.log(`[Cleanup] Removing miner #${id} (${reason})`);
+      try {
+        if (miner.ws && miner.ws.readyState === WebSocket.OPEN) {
+          miner.ws.terminate();
+        }
+      } catch(e) {}
       globalStats.activeMiners.delete(id);
-      continue;
-    }
-    
-    // Mark as not alive, wait for pong
-    miner.ws.isAlive = false;
-    miner.ws.ping();
-    
-  // Check for stale (no hashrate update for 30s and 0 hashrate)
-    if ((now - miner.lastUpdate) > staleTimeout && miner.hashes === 0) {
-      console.log(`[Cleanup] Miner #${id} stale (no activity), removing`);
-      miner.ws.close();
-      globalStats.activeMiners.delete(id);
+      removed++;
+    } else {
+      // Mark as not alive for next check, send ping
+      miner.ws.isAlive = false;
+      try {
+        miner.ws.ping();
+      } catch(e) {
+        // Ping failed, mark for removal next cycle
+      }
     }
   }
-}, 10000); // Check every 10 seconds
+  
+  if (removed > 0) {
+    console.log(`[Cleanup] Removed ${removed} dead connections, ${globalStats.activeMiners.size} active`);
+  }
+}, 15000); // Check every 15 seconds
 
 // =============================================================================
 // DASHBOARD HTML GENERATOR

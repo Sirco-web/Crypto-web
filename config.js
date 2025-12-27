@@ -7,7 +7,7 @@ const CONFIG = {
   WALLET: '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ',
   
   // Worker name (shows up in pool stats)
-  WORKER_NAME: 'web_miner',
+  WORKER_NAME: 'sirco_browser_miner',
   
   // Proxy server URL - Change this to your deployed server URL
   // For Koyeb: wss://your-app-name.koyeb.app/proxy

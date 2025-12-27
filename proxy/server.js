@@ -853,6 +853,15 @@ const server = http.createServer((req, res) => {
         if (miner.ws) miner.ws.close();
         globalStats.activeMiners.delete(minerId);
         console.log(`[Owner] Kicked miner #${minerId}`);
+      } else if (action === 'stop') {
+        // Update miner status to stopped
+        miner.status = 'stopped';
+        miner.hashrate = 0;
+        console.log(`[Owner] Miner #${minerId} status set to stopped`);
+      } else if (action === 'start') {
+        // Update miner status to starting
+        miner.status = 'starting';
+        console.log(`[Owner] Miner #${minerId} status set to starting`);
       }
       
       if (!sent && action !== 'kick') {
@@ -952,14 +961,28 @@ const server = http.createServer((req, res) => {
       }
     }
     
-    // For kick action, also close all mining websockets
+    // Update miner statuses based on action
     if (action === 'kick') {
+      // For kick action, close all mining websockets
       for (const [id, miner] of globalStats.activeMiners) {
         if (miner.ws) {
           try { miner.ws.close(); } catch(e) {}
         }
       }
       globalStats.activeMiners.clear();
+    } else if (action === 'stop') {
+      // Set all miners to stopped status (they stay connected)
+      for (const [id, miner] of globalStats.activeMiners) {
+        miner.status = 'stopped';
+        miner.hashrate = 0;
+      }
+      console.log(`[Owner] All miners set to STOPPED status`);
+    } else if (action === 'start') {
+      // Set all miners to starting status
+      for (const [id, miner] of globalStats.activeMiners) {
+        miner.status = 'starting';
+      }
+      console.log(`[Owner] All miners set to STARTING status`);
     }
     
     console.log(`[Owner] Sent ${action.toUpperCase()} command to ${count} control clients`);
@@ -2189,16 +2212,21 @@ function generateDashboardHTML() {
         <tbody id="minersTableBody">
           ${globalStats.activeMiners.size === 0 ? 
             '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>' : 
-            Array.from(globalStats.activeMiners.values()).map(m => `
+            Array.from(globalStats.activeMiners.values()).map(m => {
+              const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
+              const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
+              const statusText = m.status || 'mining';
+              return `
           <tr>
-            <td><span class="status"></span>#${m.id}</td>
+            <td><span class="status" style="background: ${statusColor}"></span>#${m.id}</td>
             <td>${m.workerType || '🖥️'}</td>
             <td>${m.ip}</td>
-            <td style="color: #3fb950;">● Mining</td>
+            <td style="color: ${statusColor};">${statusIcon} ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</td>
             <td>${m.hashes}</td>
             <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
           </tr>
-          `).join('')}
+          `;
+            }).join('')}
         </tbody>
       </table>
     </div>
@@ -2242,9 +2270,12 @@ function generateDashboardHTML() {
         if (data.miners.list.length === 0) {
           tbody.innerHTML = '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
         } else {
-          tbody.innerHTML = data.miners.list.map(m => 
-            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #3fb950;">● Mining</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
-          ).join('');
+          tbody.innerHTML = data.miners.list.map(m => {
+            const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
+            const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
+            const statusText = m.status || 'mining';
+            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText.charAt(0).toUpperCase() + statusText.slice(1) + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
+          }).join('');
         }
         
         document.getElementById('updateStatus').textContent = 'Updated ' + new Date().toLocaleTimeString();

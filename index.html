@@ -435,9 +435,9 @@
           $('status').textContent = 'Mining';
           $('status').style.color = '#00ff88';
           
-          // Start auto-optimization after 10 seconds of mining
+          // Start auto-optimization after 10 seconds (unless MAX POWER is already on)
           setTimeout(() => {
-            if (miner && miner.isRunning()) {
+            if (miner && miner.isRunning() && !maxPowerEnabled) {
               autoTune.startOptimization(miner);
             }
           }, 10000);
@@ -493,6 +493,7 @@
       
       // Stop auto-tuning
       autoTune.stopOptimization();
+      maxPowerEnabled = false;
       
       if (miner) {
         miner.stop();
@@ -515,6 +516,8 @@
     }
     
     // MAX POWER MODE - Use all CPU resources
+    let maxPowerEnabled = false;
+    
     function enableMaxPower() {
       if (!miner || !miner.isRunning()) return;
       
@@ -522,6 +525,7 @@
       
       // Stop any ongoing optimization
       autoTune.stopOptimization();
+      maxPowerEnabled = true; // Prevent auto-tune from restarting
       
       // Set maximum performance
       miner.setNumThreads(maxThreads);

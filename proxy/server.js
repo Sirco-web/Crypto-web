@@ -18,11 +18,14 @@ const CONFIG = {
   // Server
   port: process.env.PORT || 8892,
   
+  // Owner PIN for admin panel (CHANGE THIS!)
+  ownerPin: process.env.OWNER_PIN || '1234',
+  
   // Pool settings
   pool: {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
     port: parseInt(process.env.POOL_PORT) || 10128,
-    wallet: process.env.WALLET || '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ',
+    wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
     workerName: process.env.WORKER_NAME || 'CombinedWebMiners',
     // Fixed difficulty 10000 = shares found faster, less stale shares
     // Format: "x:fixed_diff_DIFFICULTY" for MoneroOcean
@@ -355,6 +358,72 @@ const server = http.createServer((req, res) => {
     return;
   }
   
+  // ==========================================================================
+  // OWNER PANEL - Protected by PIN
+  // ==========================================================================
+  if (pathname === '/owner') {
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    res.end(generateOwnerLoginHTML());
+    return;
+  }
+  
+  if (pathname === '/owner/panel') {
+    const pin = url.searchParams.get('pin');
+    if (pin !== CONFIG.ownerPin) {
+      res.setHeader('Content-Type', 'text/html');
+      res.writeHead(403);
+      res.end('<html><body style="background:#1a1a2e;color:#ff6b6b;font-family:monospace;padding:50px;text-align:center;"><h1>❌ Invalid PIN</h1><a href="/owner" style="color:#4ecdc4;">Try Again</a></body></html>');
+      return;
+    }
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    res.end(generateOwnerPanelHTML(pin));
+    return;
+  }
+  
+  if (pathname === '/owner/api/update-wallet') {
+    const pin = url.searchParams.get('pin');
+    const newWallet = url.searchParams.get('wallet');
+    
+    if (pin !== CONFIG.ownerPin) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid PIN' }));
+      return;
+    }
+    
+    if (!newWallet || newWallet.length < 90) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Invalid wallet address' }));
+      return;
+    }
+    
+    const oldWallet = CONFIG.pool.wallet;
+    CONFIG.pool.wallet = newWallet;
+    
+    // Reconnect to pool with new wallet
+    console.log('[Owner] Wallet changed!');
+    console.log('[Owner] Old:', oldWallet);
+    console.log('[Owner] New:', newWallet);
+    
+    if (sharedPool) {
+      sharedPool.destroy();
+      sharedPool = null;
+      poolConnected = false;
+      poolAuthenticated = false;
+      currentJob = null;
+      recentJobs.clear();
+      setTimeout(connectToPool, 1000);
+    }
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, wallet: newWallet }));
+    return;
+  }
+  
   // Stats Dashboard (HTML)
   if (pathname === '/stats' || pathname === '/dashboard') {
     res.setHeader('Content-Type', 'text/html');
@@ -585,6 +654,167 @@ setInterval(() => {
     console.log(`[Cleanup] Removed ${removed} dead connections, ${globalStats.activeMiners.size} active`);
   }
 }, 15000); // Check every 15 seconds
+
+// =============================================================================
+// OWNER LOGIN PAGE
+// =============================================================================
+function generateOwnerLoginHTML() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔐 Owner Login</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); color: #e6edf3; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .login-box { background: rgba(255,255,255,0.05); border: 1px solid #30363d; border-radius: 16px; padding: 3rem; text-align: center; max-width: 400px; width: 90%; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #8b949e; margin-bottom: 2rem; }
+    input { width: 100%; padding: 1rem; font-size: 1.5rem; text-align: center; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; margin-bottom: 1rem; letter-spacing: 0.5rem; }
+    input:focus { outline: none; border-color: #6ee7ff; }
+    button { width: 100%; padding: 1rem; font-size: 1rem; font-weight: bold; background: linear-gradient(135deg, #238636, #2ea043); border: none; border-radius: 8px; color: white; cursor: pointer; }
+    button:hover { background: linear-gradient(135deg, #2ea043, #3fb950); }
+    .back { margin-top: 1.5rem; }
+    .back a { color: #8b949e; text-decoration: none; }
+    .back a:hover { color: #6ee7ff; }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>🔐 Owner Panel</h1>
+    <p class="subtitle">Enter PIN to access</p>
+    <form action="/owner/panel" method="GET">
+      <input type="password" name="pin" placeholder="••••" maxlength="10" required autofocus>
+      <button type="submit">Unlock</button>
+    </form>
+    <div class="back"><a href="/">← Back to Dashboard</a></div>
+  </div>
+</body>
+</html>`;
+}
+
+// =============================================================================
+// OWNER PANEL PAGE
+// =============================================================================
+function generateOwnerPanelHTML(pin) {
+  const moUrl = `https://moneroocean.stream/#/dashboard?addr=${CONFIG.pool.wallet}`;
+  
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>👑 Owner Panel</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); color: #e6edf3; min-height: 100vh; padding: 2rem; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #8b949e; margin-bottom: 2rem; }
+    .card { background: rgba(255,255,255,0.05); border: 1px solid #30363d; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h3 { color: #f7931a; font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .wallet-box { background: #21262d; border-radius: 8px; padding: 1rem; word-break: break-all; font-family: monospace; font-size: 0.9rem; color: #6ee7ff; margin-bottom: 1rem; }
+    .link { display: inline-block; padding: 0.75rem 1.5rem; background: linear-gradient(135deg, #238636, #2ea043); border-radius: 8px; color: white; text-decoration: none; font-weight: bold; margin-right: 0.5rem; margin-bottom: 0.5rem; }
+    .link:hover { background: linear-gradient(135deg, #2ea043, #3fb950); }
+    .link.orange { background: linear-gradient(135deg, #f7931a, #f9a825); }
+    .link.blue { background: linear-gradient(135deg, #1f6feb, #388bfd); }
+    input[type="text"] { width: 100%; padding: 1rem; font-size: 0.9rem; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; margin-bottom: 1rem; font-family: monospace; }
+    input:focus { outline: none; border-color: #6ee7ff; }
+    .btn { padding: 0.75rem 1.5rem; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; }
+    .btn-primary { background: linear-gradient(135deg, #238636, #2ea043); color: white; }
+    .btn-primary:hover { background: linear-gradient(135deg, #2ea043, #3fb950); }
+    .status { padding: 1rem; border-radius: 8px; margin-top: 1rem; display: none; }
+    .status.success { display: block; background: rgba(63, 185, 80, 0.2); border: 1px solid #3fb950; color: #3fb950; }
+    .status.error { display: block; background: rgba(248, 81, 73, 0.2); border: 1px solid #f85149; color: #f85149; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
+    .stat { text-align: center; padding: 1rem; background: #21262d; border-radius: 8px; }
+    .stat .value { font-size: 1.5rem; font-weight: bold; color: #6ee7ff; }
+    .stat .label { color: #8b949e; font-size: 0.8rem; }
+    .back { margin-top: 2rem; }
+    .back a { color: #8b949e; text-decoration: none; }
+    .back a:hover { color: #6ee7ff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>👑 Owner Panel</h1>
+    <p class="subtitle">Manage your mining operation</p>
+    
+    <div class="card">
+      <h3>💰 Current Wallet</h3>
+      <div class="wallet-box">${CONFIG.pool.wallet}</div>
+      <a href="${moUrl}" target="_blank" class="link orange">📊 View on MoneroOcean</a>
+      <a href="https://xmrchain.net/search?value=${CONFIG.pool.wallet}" target="_blank" class="link blue">🔍 Blockchain Explorer</a>
+    </div>
+    
+    <div class="card">
+      <h3>📊 Mining Stats</h3>
+      <div class="stats">
+        <div class="stat">
+          <div class="value">${globalStats.activeMiners.size}</div>
+          <div class="label">Active Miners</div>
+        </div>
+        <div class="stat">
+          <div class="value">${globalStats.acceptedShares}</div>
+          <div class="label">Accepted Shares</div>
+        </div>
+        <div class="stat">
+          <div class="value">${globalStats.rejectedShares}</div>
+          <div class="label">Rejected Shares</div>
+        </div>
+        <div class="stat">
+          <div class="value">${formatUptime(globalStats.uptime)}</div>
+          <div class="label">Uptime</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h3>⚙️ Change Wallet</h3>
+      <p style="color: #8b949e; margin-bottom: 1rem;">⚠️ This will reconnect to the pool with the new wallet.</p>
+      <input type="text" id="newWallet" placeholder="Enter new Monero wallet address (95 characters)">
+      <button class="btn btn-primary" onclick="updateWallet()">💾 Update Wallet</button>
+      <div id="status" class="status"></div>
+    </div>
+    
+    <div class="back">
+      <a href="/">← Back to Dashboard</a>
+    </div>
+  </div>
+  
+  <script>
+    async function updateWallet() {
+      const wallet = document.getElementById('newWallet').value.trim();
+      const status = document.getElementById('status');
+      
+      if (!wallet || wallet.length < 90) {
+        status.className = 'status error';
+        status.textContent = '❌ Invalid wallet address. Must be at least 90 characters.';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/owner/api/update-wallet?pin=${pin}&wallet=' + encodeURIComponent(wallet));
+        const data = await res.json();
+        
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ Wallet updated! Reconnecting to pool...';
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed to update wallet');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>`;
+}
 
 // =============================================================================
 // DASHBOARD HTML GENERATOR

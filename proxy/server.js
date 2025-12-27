@@ -1095,6 +1095,33 @@ const server = http.createServer((req, res) => {
        return;
      }
   }
+
+  // Serve JS files from ROOT (including chunks)
+  if (pathname.endsWith('.js')) {
+    // Remove leading slash for path.join if needed, but path.join handles it usually.
+    // However, pathname starts with /, so path.join(root, '/foo.js') might be absolute.
+    // Better to strip leading slash.
+    const safePath = pathname.startsWith('/') ? pathname.slice(1) : pathname;
+    const filePath = path.join(CONFIG.publicPath, safePath);
+    if (fs.existsSync(filePath)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.writeHead(200);
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
+
+  // Serve WASM files from ROOT
+  if (pathname.endsWith('.wasm')) {
+    const safePath = pathname.startsWith('/') ? pathname.slice(1) : pathname;
+    const filePath = path.join(CONFIG.publicPath, safePath);
+    if (fs.existsSync(filePath)) {
+      res.setHeader('Content-Type', 'application/wasm');
+      res.writeHead(200);
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
   
   // 404 for anything else
   res.setHeader('Content-Type', 'text/html');

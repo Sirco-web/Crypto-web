@@ -22,15 +22,15 @@ const CONFIG = {
   ownerPin: process.env.OWNER_PIN || '1234',
   
   // Pool settings
-  // Port 10128 = standard port (128000 starting diff, pool auto-adjusts)
-  // Port 20128 = SSL version
-  // Let pool dynamically adjust difficulty based on hashrate
+  // Port 10001 = low difficulty port (good for browser miners)
+  // Port 10128 = high difficulty port (128000 start)
   pool: {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
-    port: parseInt(process.env.POOL_PORT) || 10128,
+    port: parseInt(process.env.POOL_PORT) || 10001,  // Low diff port by default
     wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
     workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
-    fixedDiff: false  // Let pool auto-adjust difficulty
+    difficulty: 10000,  // Manual difficulty (when auto is off)
+    autoMode: true      // Auto-adjust difficulty based on hashrate
   },
   
   // Paths
@@ -38,9 +38,37 @@ const CONFIG = {
   libPath: path.join(__dirname, '..', 'lib')
 };
 
-// Get pool password (just 'x' for auto-difficulty)
+// Calculate optimal difficulty based on combined hashrate
+// Target: 1 share every 30-45 seconds
+function calculateOptimalDifficulty() {
+  const hashrate = globalStats.combinedHashrate || 0;
+  if (hashrate < 1) return 1000;  // Minimum difficulty
+  
+  // difficulty = hashrate * target_seconds
+  const targetSeconds = 30;  // 1 share per 30 seconds
+  let optimalDiff = Math.round(hashrate * targetSeconds);
+  
+  // Clamp to reasonable range
+  optimalDiff = Math.max(1000, Math.min(optimalDiff, 500000));
+  
+  return optimalDiff;
+}
+
+// Get optimal port based on difficulty
+function getOptimalPort(difficulty) {
+  // Port 10001: low diff (1000-50000)
+  // Port 10128: high diff (50000+)
+  return difficulty < 50000 ? 10001 : 10128;
+}
+
+// Get pool password with difficulty
 function getPoolPassword() {
-  return 'x';  // Let pool dynamically adjust difficulty
+  if (CONFIG.pool.autoMode) {
+    const optimalDiff = calculateOptimalDifficulty();
+    return `x:fixed_diff_${optimalDiff}`;
+  } else {
+    return `x:fixed_diff_${CONFIG.pool.difficulty}`;
+  }
 }
 
 // =============================================================================
@@ -109,6 +137,32 @@ setInterval(() => {
   }
 }, 600000);
 
+// Track last used difficulty for auto-adjustment
+let lastUsedDifficulty = 10000;
+
+// Auto-adjust difficulty every 2 minutes when in auto mode
+setInterval(() => {
+  if (!CONFIG.pool.autoMode) return;
+  
+  const optimalDiff = calculateOptimalDifficulty();
+  const diffChange = Math.abs(optimalDiff - lastUsedDifficulty) / lastUsedDifficulty;
+  
+  // Only reconnect if difficulty changed by more than 50%
+  if (diffChange > 0.5 && poolConnected) {
+    console.log(`[Auto] Difficulty change detected: ${lastUsedDifficulty} -> ${optimalDiff} (${(diffChange * 100).toFixed(0)}% change)`);
+    
+    // Check if port should change
+    const optimalPort = getOptimalPort(optimalDiff);
+    if (CONFIG.pool.port !== optimalPort) {
+      CONFIG.pool.port = optimalPort;
+      console.log(`[Auto] Switching to port ${optimalPort}`);
+    }
+    
+    lastUsedDifficulty = optimalDiff;
+    reconnectPool();
+  }
+}, 120000);  // Check every 2 minutes
+
 // =============================================================================
 // GLOBAL STATS - Combined stats for ALL miners
 // =============================================================================
@@ -168,6 +222,7 @@ function connectToPool() {
     currentJob = null;  // Clear old job on reconnect
     
     // Login with combined worker name and difficulty
+    const currentDiff = CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty;
     const loginMsg = {
       id: 1,
       method: 'login',
@@ -178,7 +233,7 @@ function connectToPool() {
       }
     };
     sharedPool.write(JSON.stringify(loginMsg) + '\n');
-    console.log(`[Pool] Sent login - Worker: ${CONFIG.pool.workerName}, Difficulty: Auto (pool-adjusted)`);
+    console.log(`[Pool] Sent login - Worker: ${CONFIG.pool.workerName}, Mode: ${CONFIG.pool.autoMode ? 'AUTO' : 'MANUAL'}, Difficulty: ${currentDiff}, Port: ${CONFIG.pool.port}`);
   });
   
   sharedPool.on('data', (data) => {
@@ -541,7 +596,45 @@ const server = http.createServer((req, res) => {
     return;
   }
   
-  // API: Update difficulty
+  // API: Toggle auto/manual difficulty mode
+  if (pathname === '/owner/api/toggle-auto-mode') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const mode = url.searchParams.get('mode');
+    CONFIG.pool.autoMode = (mode === 'auto');
+    
+    // Auto-adjust port based on current difficulty
+    if (CONFIG.pool.autoMode) {
+      const optimalDiff = calculateOptimalDifficulty();
+      const optimalPort = getOptimalPort(optimalDiff);
+      if (CONFIG.pool.port !== optimalPort) {
+        CONFIG.pool.port = optimalPort;
+        console.log(`[Owner] Auto-switched to port ${optimalPort} for difficulty ${optimalDiff}`);
+      }
+    }
+    
+    console.log(`[Owner] Difficulty mode: ${CONFIG.pool.autoMode ? 'AUTO' : 'MANUAL'}`);
+    
+    reconnectPool();
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ 
+      success: true, 
+      autoMode: CONFIG.pool.autoMode,
+      difficulty: CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty,
+      port: CONFIG.pool.port
+    }));
+    return;
+  }
+  
+  // API: Update difficulty (manual mode)
   if (pathname === '/owner/api/update-difficulty') {
     const token = url.searchParams.get('token');
     if (!validateSession(token, clientIP)) {
@@ -552,23 +645,32 @@ const server = http.createServer((req, res) => {
     }
     
     const newDiff = parseInt(url.searchParams.get('difficulty'));
-    if (!newDiff || newDiff < 1000 || newDiff > 1000000) {
+    if (!newDiff || newDiff < 1000 || newDiff > 500000) {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(400);
-      res.end(JSON.stringify({ error: 'Difficulty must be between 1000 and 1000000' }));
+      res.end(JSON.stringify({ error: 'Difficulty must be between 1000 and 500000' }));
       return;
     }
     
+    // Switch to manual mode and set difficulty
+    CONFIG.pool.autoMode = false;
     const oldDiff = CONFIG.pool.difficulty;
     CONFIG.pool.difficulty = newDiff;
     
-    console.log(`[Owner] Difficulty changed: ${oldDiff} -> ${newDiff}`);
+    // Auto-adjust port based on difficulty
+    const optimalPort = getOptimalPort(newDiff);
+    if (CONFIG.pool.port !== optimalPort) {
+      CONFIG.pool.port = optimalPort;
+      console.log(`[Owner] Switched to port ${optimalPort} for difficulty ${newDiff}`);
+    }
+    
+    console.log(`[Owner] Difficulty changed: ${oldDiff} -> ${newDiff} (MANUAL mode)`);
     
     reconnectPool();
     
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({ success: true, difficulty: newDiff }));
+    res.end(JSON.stringify({ success: true, difficulty: newDiff, port: CONFIG.pool.port, autoMode: false }));
     return;
   }
   
@@ -790,12 +892,19 @@ const server = http.createServer((req, res) => {
     
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
+    
+    const currentDiff = CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty;
+    
     res.end(JSON.stringify({
       config: {
         wallet: CONFIG.pool.wallet,
-        difficulty: 'auto',
+        difficulty: currentDiff,
+        autoMode: CONFIG.pool.autoMode,
+        manualDifficulty: CONFIG.pool.difficulty,
+        calculatedDifficulty: calculateOptimalDifficulty(),
         workerName: CONFIG.pool.workerName,
-        pool: `${CONFIG.pool.host}:${CONFIG.pool.port}`
+        pool: `${CONFIG.pool.host}:${CONFIG.pool.port}`,
+        port: CONFIG.pool.port
       },
       pool: {
         connected: poolConnected,
@@ -807,6 +916,7 @@ const server = http.createServer((req, res) => {
         uptime: globalStats.uptime,
         totalConnections: globalStats.totalConnections,
         activeMiners: globalStats.activeMiners.size,
+        combinedHashrate: globalStats.combinedHashrate,
         totalHashes: globalStats.totalHashes,
         totalShares: globalStats.totalShares,
         acceptedShares: globalStats.acceptedShares,
@@ -1349,21 +1459,55 @@ function generateOwnerPanelHTML(pin) {
       </div>
     </div>
     
-    <div class="grid-2">
-      <div class="card">
-        <h3>⚙️ Pool Settings</h3>
-        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Difficulty is auto-adjusted by the pool based on hashrate</p>
-        <div class="config-row">
-          <span class="config-label">Mode:</span>
-          <span class="config-value" style="color:#3fb950;">✅ Auto-Difficulty</span>
+    <div class="card">
+      <h3>⚙️ Difficulty Settings</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+        <div>
+          <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Difficulty Mode:</p>
+          <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+            <button id="btnAutoMode" class="btn ${CONFIG.pool.autoMode ? 'btn-primary' : 'btn-secondary'}" onclick="setAutoMode(true)">🤖 AUTO</button>
+            <button id="btnManualMode" class="btn ${!CONFIG.pool.autoMode ? 'btn-primary' : 'btn-secondary'}" onclick="setAutoMode(false)">✋ MANUAL</button>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Current Port:</span>
+            <span class="config-value" id="currentPort">${CONFIG.pool.port}</span>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Current Diff:</span>
+            <span class="config-value" id="currentDiff">${CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty}</span>
+          </div>
         </div>
-        <div class="config-row">
-          <span class="config-label">Port:</span>
-          <span class="config-value">${CONFIG.pool.port}</span>
+        <div>
+          <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Combined Hashrate & Auto-Calc:</p>
+          <div class="config-row">
+            <span class="config-label">Total H/s:</span>
+            <span class="config-value" id="totalHashrate" style="color:#f7931a;">${globalStats.combinedHashrate.toFixed(1)}</span>
+          </div>
+          <div class="config-row">
+            <span class="config-label">Optimal Diff:</span>
+            <span class="config-value" id="optimalDiff" style="color:#3fb950;">${calculateOptimalDifficulty()}</span>
+          </div>
+          <p style="color: #6ee7ff; margin-top: 0.5rem; font-size: 0.75rem;">💡 Formula: hashrate × 30 sec = optimal difficulty</p>
         </div>
-        <p style="color: #6ee7ff; margin-top: 0.75rem; font-size: 0.8rem;">💡 Pool dynamically adjusts difficulty for optimal share rate (~1-2 per minute)</p>
       </div>
-      
+      <div id="manualDiffSection" style="margin-top: 1rem; ${CONFIG.pool.autoMode ? 'display:none;' : ''}">
+        <p style="color: #8b949e; margin-bottom: 0.5rem; font-size: 0.85rem;">Manual Difficulty (1000 - 500000):</p>
+        <div class="input-group">
+          <input type="number" id="newDifficulty" value="${CONFIG.pool.difficulty}" min="1000" max="500000" step="1000">
+          <button class="btn btn-primary" onclick="updateDifficulty()">💾 Apply</button>
+        </div>
+        <div class="input-group" style="margin-top: 0.5rem;">
+          <button class="btn btn-secondary" onclick="setDiff(5000)">5K</button>
+          <button class="btn btn-secondary" onclick="setDiff(10000)">10K</button>
+          <button class="btn btn-secondary" onclick="setDiff(25000)">25K</button>
+          <button class="btn btn-secondary" onclick="setDiff(50000)">50K</button>
+          <button class="btn btn-secondary" onclick="setDiff(100000)">100K</button>
+        </div>
+      </div>
+      <div id="diffStatus" class="status"></div>
+    </div>
+    
+    <div class="grid-2">
       <div class="card">
         <h3>👷 Change Worker Name</h3>
         <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Identifies your miner group on the pool.</p>
@@ -1373,16 +1517,16 @@ function generateOwnerPanelHTML(pin) {
         </div>
         <div id="workerStatus" class="status"></div>
       </div>
-    </div>
-    
-    <div class="card">
-      <h3>💼 Change Wallet</h3>
-      <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">⚠️ This will reconnect to the pool. Double-check the address!</p>
-      <div class="input-group">
-        <input type="text" id="newWallet" placeholder="Enter new Monero wallet address (95 characters)">
-        <button class="btn btn-primary" onclick="updateWallet()">💾 Update</button>
+      
+      <div class="card">
+        <h3>💼 Change Wallet</h3>
+        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">⚠️ This will reconnect to the pool.</p>
+        <div class="input-group">
+          <input type="text" id="newWallet" placeholder="Enter new Monero wallet address">
+          <button class="btn btn-primary" onclick="updateWallet()">💾 Update</button>
+        </div>
+        <div id="walletStatus" class="status"></div>
       </div>
-      <div id="walletStatus" class="status"></div>
     </div>
     
     <div class="card">
@@ -1472,6 +1616,69 @@ function generateOwnerPanelHTML(pin) {
   
   <script>
     const TOKEN = '${token}';
+    let currentAutoMode = ${CONFIG.pool.autoMode};
+    
+    function setDiff(val) {
+      document.getElementById('newDifficulty').value = val;
+    }
+    
+    async function setAutoMode(isAuto) {
+      const status = document.getElementById('diffStatus');
+      try {
+        const res = await fetch('/owner/api/toggle-auto-mode?token=' + TOKEN + '&mode=' + (isAuto ? 'auto' : 'manual'));
+        const data = await res.json();
+        if (data.success) {
+          currentAutoMode = data.autoMode;
+          status.className = 'status success';
+          status.textContent = '✅ Mode: ' + (data.autoMode ? 'AUTO' : 'MANUAL') + ', Diff: ' + data.difficulty + ', Port: ' + data.port;
+          
+          // Update UI
+          document.getElementById('btnAutoMode').className = 'btn ' + (data.autoMode ? 'btn-primary' : 'btn-secondary');
+          document.getElementById('btnManualMode').className = 'btn ' + (!data.autoMode ? 'btn-primary' : 'btn-secondary');
+          document.getElementById('manualDiffSection').style.display = data.autoMode ? 'none' : 'block';
+          document.getElementById('currentPort').textContent = data.port;
+          document.getElementById('currentDiff').textContent = data.difficulty;
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    async function updateDifficulty() {
+      const diff = parseInt(document.getElementById('newDifficulty').value);
+      const status = document.getElementById('diffStatus');
+      
+      if (!diff || diff < 1000 || diff > 500000) {
+        status.className = 'status error';
+        status.textContent = '❌ Difficulty must be between 1000 and 500000';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/owner/api/update-difficulty?token=' + TOKEN + '&difficulty=' + diff);
+        const data = await res.json();
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ Difficulty: ' + data.difficulty + ', Port: ' + data.port + ' (MANUAL mode)';
+          document.getElementById('currentPort').textContent = data.port;
+          document.getElementById('currentDiff').textContent = data.difficulty;
+          document.getElementById('btnAutoMode').className = 'btn btn-secondary';
+          document.getElementById('btnManualMode').className = 'btn btn-primary';
+          currentAutoMode = false;
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
     async function updateWorker() {
       const worker = document.getElementById('newWorker').value.trim();
       const status = document.getElementById('workerStatus');
@@ -1575,6 +1782,19 @@ function generateOwnerPanelHTML(pin) {
         const data = await res.json();
         allMinersData = data.miners || [];
         updateMinersTable();
+        
+        // Update hashrate and difficulty display
+        if (data.stats) {
+          document.getElementById('totalHashrate').textContent = (data.stats.combinedHashrate || 0).toFixed(1);
+        }
+        if (data.config) {
+          document.getElementById('optimalDiff').textContent = data.config.calculatedDifficulty || '-';
+          // Only update if in auto mode (don't override manual settings)
+          if (currentAutoMode) {
+            document.getElementById('currentDiff').textContent = data.config.difficulty || '-';
+            document.getElementById('currentPort').textContent = data.config.port || '-';
+          }
+        }
       } catch(e) {
         console.error('Failed to load miners:', e);
       }

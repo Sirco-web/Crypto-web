@@ -289,6 +289,7 @@ const server = http.createServer((req, res) => {
       mining: {
         combinedHashrate: globalStats.combinedHashrate,
         totalHashes: globalStats.totalHashes,
+        totalShares: globalStats.totalShares,
         acceptedShares: globalStats.acceptedShares,
         rejectedShares: globalStats.rejectedShares,
         blocksFound: globalStats.blocksFound
@@ -439,10 +440,15 @@ wss.on('connection', (ws, req) => {
         }
         globalStats.totalHashes++;
       }
-      // Hashrate update from miner
+      // Hashrate update from miner (if sent)
       else if (msg.type === 'hashrate' && miner) {
         miner.hashrate = msg.params.rate || 0;
         miner.lastUpdate = Date.now();
+      }
+      // Keep-alive ping
+      else if (msg.type === 'ping') {
+        miner.lastUpdate = Date.now();
+        ws.send(JSON.stringify({ type: 'pong' }));
       }
     } catch (e) {
       console.error(`[Miner #${clientId}] Message error:`, e.message);
@@ -491,8 +497,8 @@ setInterval(() => {
     miner.ws.isAlive = false;
     miner.ws.ping();
     
-    // Check for stale (no hashrate update for 30s and 0 hashrate)
-    if (miner.hashrate === 0 && (now - miner.lastUpdate) > staleTimeout) {
+  // Check for stale (no hashrate update for 30s and 0 hashrate)
+    if ((now - miner.lastUpdate) > staleTimeout && miner.hashes === 0) {
       console.log(`[Cleanup] Miner #${id} stale (no activity), removing`);
       miner.ws.close();
       globalStats.activeMiners.delete(id);
@@ -542,14 +548,8 @@ function generateDashboardHTML() {
     
     <div class="grid">
       <div class="card combined">
-        <h3>⚡ Combined Hashrate</h3>
-        <div class="value orange" id="combinedHashrate">${globalStats.combinedHashrate.toFixed(2)} H/s</div>
-        <div class="sub" id="minerCountSub">All ${globalStats.activeMiners.size} miners combined</div>
-      </div>
-      
-      <div class="card">
         <h3>👥 Active Miners</h3>
-        <div class="value" id="minerCount">${globalStats.activeMiners.size}</div>
+        <div class="value orange" id="minerCount">${globalStats.activeMiners.size}</div>
         <div class="sub" id="totalConnections">${globalStats.totalConnections} total connections</div>
       </div>
       
@@ -560,9 +560,15 @@ function generateDashboardHTML() {
       </div>
       
       <div class="card">
+        <h3>📤 Total Submitted</h3>
+        <div class="value" id="totalShares">${globalStats.totalShares}</div>
+        <div class="sub" id="totalHashes">Waiting for shares...</div>
+      </div>
+      
+      <div class="card">
         <h3>🎉 Blocks Found</h3>
         <div class="value ${globalStats.blocksFound > 0 ? 'green' : ''}" id="blocksFound">${globalStats.blocksFound}</div>
-        <div class="sub" id="totalHashes">Total hashes: ${globalStats.totalHashes.toLocaleString()}</div>
+        <div class="sub">Keep mining!</div>
       </div>
     </div>
     
@@ -583,7 +589,7 @@ function generateDashboardHTML() {
           <tr>
             <th>ID</th>
             <th>IP Address</th>
-            <th>Hashrate</th>
+            <th>Status</th>
             <th>Shares</th>
             <th>Connected</th>
           </tr>
@@ -595,7 +601,7 @@ function generateDashboardHTML() {
           <tr>
             <td><span class="status"></span>#${m.id}</td>
             <td>${m.ip}</td>
-            <td>${(m.hashrate || 0).toFixed(2)} H/s</td>
+            <td style="color: #3fb950;">● Mining</td>
             <td>${m.hashes}</td>
             <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
           </tr>
@@ -618,14 +624,13 @@ function generateDashboardHTML() {
         const data = await res.json();
         
         // Update values
-        document.getElementById('combinedHashrate').textContent = data.mining.combinedHashrate.toFixed(2) + ' H/s';
         document.getElementById('minerCount').textContent = data.miners.active;
-        document.getElementById('minerCountSub').textContent = 'All ' + data.miners.active + ' miners combined';
         document.getElementById('totalConnections').textContent = data.miners.totalConnections + ' total connections';
         document.getElementById('acceptedShares').textContent = data.mining.acceptedShares;
         document.getElementById('rejectedShares').textContent = data.mining.rejectedShares + ' rejected';
+        document.getElementById('totalShares').textContent = data.mining.totalShares || 0;
+        document.getElementById('totalHashes').textContent = data.mining.acceptedShares > 0 ? 'Shares working!' : 'Waiting for shares...';
         document.getElementById('blocksFound').textContent = data.mining.blocksFound;
-        document.getElementById('totalHashes').textContent = 'Total hashes: ' + data.mining.totalHashes.toLocaleString();
         document.getElementById('poolStatus').innerHTML = '<span style="color: ' + (data.pool.connected ? '#3fb950' : '#f85149') + '">' + (data.pool.connected ? '● Connected' : '○ Disconnected') + '</span>';
         document.getElementById('uptime').textContent = data.server.uptimeFormatted;
         
@@ -635,7 +640,7 @@ function generateDashboardHTML() {
           tbody.innerHTML = '<tr><td colspan="5" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
         } else {
           tbody.innerHTML = data.miners.list.map(m => 
-            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + m.ip + '</td><td>' + (m.hashrate || 0).toFixed(2) + ' H/s</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
+            '<tr><td><span class="status"></span>#' + m.id + '</td><td>' + m.ip + '</td><td style="color: #3fb950;">● Mining</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>'
           ).join('');
         }
         

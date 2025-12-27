@@ -27,15 +27,84 @@ const CONFIG = {
     port: parseInt(process.env.POOL_PORT) || 10128,
     wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
     workerName: process.env.WORKER_NAME || 'CombinedWebMiners',
-    // Fixed difficulty 10000 = shares found faster, less stale shares
-    // Format: "x:fixed_diff_DIFFICULTY" for MoneroOcean
-    password: 'x:fixed_diff_10000'
+    difficulty: parseInt(process.env.DIFFICULTY) || 10000
   },
   
   // Paths
   publicPath: path.join(__dirname, '..'),
   libPath: path.join(__dirname, '..', 'lib')
 };
+
+// Get pool password with current difficulty
+function getPoolPassword() {
+  return `x:fixed_diff_${CONFIG.pool.difficulty}`;
+}
+
+// =============================================================================
+// SECURITY - Rate limiting and session tokens
+// =============================================================================
+const security = {
+  failedAttempts: new Map(),  // IP -> { count, lastAttempt }
+  sessions: new Map(),  // token -> { created, ip }
+  maxAttempts: 5,
+  lockoutTime: 300000,  // 5 minutes
+  sessionTimeout: 3600000  // 1 hour
+};
+
+function generateToken() {
+  return require('crypto').randomBytes(32).toString('hex');
+}
+
+function checkRateLimit(ip) {
+  const record = security.failedAttempts.get(ip);
+  if (!record) return true;
+  
+  if (Date.now() - record.lastAttempt > security.lockoutTime) {
+    security.failedAttempts.delete(ip);
+    return true;
+  }
+  
+  return record.count < security.maxAttempts;
+}
+
+function recordFailedAttempt(ip) {
+  const record = security.failedAttempts.get(ip) || { count: 0, lastAttempt: 0 };
+  record.count++;
+  record.lastAttempt = Date.now();
+  security.failedAttempts.set(ip, record);
+  console.log(`[Security] Failed login from ${ip} (${record.count}/${security.maxAttempts})`);
+}
+
+function createSession(ip) {
+  const token = generateToken();
+  security.sessions.set(token, { created: Date.now(), ip });
+  return token;
+}
+
+function validateSession(token, ip) {
+  const session = security.sessions.get(token);
+  if (!session) return false;
+  if (Date.now() - session.created > security.sessionTimeout) {
+    security.sessions.delete(token);
+    return false;
+  }
+  return session.ip === ip;
+}
+
+// Cleanup old sessions every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of security.sessions) {
+    if (now - session.created > security.sessionTimeout) {
+      security.sessions.delete(token);
+    }
+  }
+  for (const [ip, record] of security.failedAttempts) {
+    if (now - record.lastAttempt > security.lockoutTime) {
+      security.failedAttempts.delete(ip);
+    }
+  }
+}, 600000);
 
 // =============================================================================
 // GLOBAL STATS - Combined stats for ALL miners
@@ -94,18 +163,18 @@ function connectToPool() {
     poolAuthenticated = false;  // Not authenticated until we get job response
     currentJob = null;  // Clear old job on reconnect
     
-    // Login with combined worker name
+    // Login with combined worker name and difficulty
     const loginMsg = {
       id: 1,
       method: 'login',
       params: {
         login: CONFIG.pool.wallet,
-        pass: CONFIG.pool.workerName,
+        pass: getPoolPassword(),  // Uses current difficulty setting
         agent: 'CombinedWebMiner/2.0'
       }
     };
     sharedPool.write(JSON.stringify(loginMsg) + '\n');
-    console.log('[Pool] Sent login for combined worker: ' + CONFIG.pool.workerName);
+    console.log(`[Pool] Sent login - Worker: ${CONFIG.pool.workerName}, Difficulty: ${CONFIG.pool.difficulty}`);
   });
   
   sharedPool.on('data', (data) => {
@@ -174,6 +243,19 @@ function handlePoolMessage(msg) {
     console.log('[Pool] ❌ Share rejected:', msg.error.message);
     broadcastToMiners({ type: 'error', params: { error: msg.error.message } });
   }
+}
+
+// Reconnect to pool (used when settings change)
+function reconnectPool() {
+  if (sharedPool) {
+    sharedPool.destroy();
+    sharedPool = null;
+  }
+  poolConnected = false;
+  poolAuthenticated = false;
+  currentJob = null;
+  recentJobs.clear();
+  setTimeout(connectToPool, 1000);
 }
 
 function broadcastJob(job) {
@@ -359,8 +441,11 @@ const server = http.createServer((req, res) => {
   }
   
   // ==========================================================================
-  // OWNER PANEL - Protected by PIN
+  // OWNER PANEL - Protected by PIN with rate limiting and sessions
   // ==========================================================================
+  const clientIP = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
+                   req.socket.remoteAddress || 'unknown';
+  
   if (pathname === '/owner') {
     res.setHeader('Content-Type', 'text/html');
     res.writeHead(200);
@@ -368,31 +453,59 @@ const server = http.createServer((req, res) => {
     return;
   }
   
-  if (pathname === '/owner/panel') {
+  // Login endpoint - creates session token
+  if (pathname === '/owner/login') {
     const pin = url.searchParams.get('pin');
+    
+    // Check rate limit
+    if (!checkRateLimit(clientIP)) {
+      res.setHeader('Content-Type', 'text/html');
+      res.writeHead(429);
+      res.end('<html><body style="background:#1a1a2e;color:#ff6b6b;font-family:monospace;padding:50px;text-align:center;"><h1>🔒 Too Many Attempts</h1><p>Please wait 5 minutes before trying again.</p><a href="/owner" style="color:#4ecdc4;">Back</a></body></html>');
+      return;
+    }
+    
     if (pin !== CONFIG.ownerPin) {
+      recordFailedAttempt(clientIP);
       res.setHeader('Content-Type', 'text/html');
       res.writeHead(403);
       res.end('<html><body style="background:#1a1a2e;color:#ff6b6b;font-family:monospace;padding:50px;text-align:center;"><h1>❌ Invalid PIN</h1><a href="/owner" style="color:#4ecdc4;">Try Again</a></body></html>');
       return;
     }
+    
+    // Create session token
+    const token = createSession(clientIP);
     res.setHeader('Content-Type', 'text/html');
-    res.writeHead(200);
-    res.end(generateOwnerPanelHTML(pin));
+    res.writeHead(302, { 'Location': `/owner/panel?token=${token}` });
+    res.end();
     return;
   }
   
+  if (pathname === '/owner/panel') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'text/html');
+      res.writeHead(403);
+      res.end('<html><body style="background:#1a1a2e;color:#ff6b6b;font-family:monospace;padding:50px;text-align:center;"><h1>❌ Session Expired</h1><a href="/owner" style="color:#4ecdc4;">Login Again</a></body></html>');
+      return;
+    }
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    res.end(generateOwnerPanelHTML(token));
+    return;
+  }
+  
+  // API: Update wallet
   if (pathname === '/owner/api/update-wallet') {
-    const pin = url.searchParams.get('pin');
-    const newWallet = url.searchParams.get('wallet');
-    
-    if (pin !== CONFIG.ownerPin) {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(403);
-      res.end(JSON.stringify({ error: 'Invalid PIN' }));
+      res.end(JSON.stringify({ error: 'Invalid session' }));
       return;
     }
     
+    const newWallet = url.searchParams.get('wallet');
     if (!newWallet || newWallet.length < 90) {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(400);
@@ -403,24 +516,128 @@ const server = http.createServer((req, res) => {
     const oldWallet = CONFIG.pool.wallet;
     CONFIG.pool.wallet = newWallet;
     
-    // Reconnect to pool with new wallet
     console.log('[Owner] Wallet changed!');
     console.log('[Owner] Old:', oldWallet);
     console.log('[Owner] New:', newWallet);
     
-    if (sharedPool) {
-      sharedPool.destroy();
-      sharedPool = null;
-      poolConnected = false;
-      poolAuthenticated = false;
-      currentJob = null;
-      recentJobs.clear();
-      setTimeout(connectToPool, 1000);
-    }
+    reconnectPool();
     
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
     res.end(JSON.stringify({ success: true, wallet: newWallet }));
+    return;
+  }
+  
+  // API: Update difficulty
+  if (pathname === '/owner/api/update-difficulty') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const newDiff = parseInt(url.searchParams.get('difficulty'));
+    if (!newDiff || newDiff < 1000 || newDiff > 1000000) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Difficulty must be between 1000 and 1000000' }));
+      return;
+    }
+    
+    const oldDiff = CONFIG.pool.difficulty;
+    CONFIG.pool.difficulty = newDiff;
+    
+    console.log(`[Owner] Difficulty changed: ${oldDiff} -> ${newDiff}`);
+    
+    reconnectPool();
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, difficulty: newDiff }));
+    return;
+  }
+  
+  // API: Update worker name
+  if (pathname === '/owner/api/update-worker') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const newWorker = url.searchParams.get('worker');
+    if (!newWorker || newWorker.length < 1 || newWorker.length > 32) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Worker name must be 1-32 characters' }));
+      return;
+    }
+    
+    CONFIG.pool.workerName = newWorker;
+    console.log(`[Owner] Worker name changed to: ${newWorker}`);
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, worker: newWorker }));
+    return;
+  }
+  
+  // API: Get full stats (for owner only)
+  if (pathname === '/owner/api/stats') {
+    const token = url.searchParams.get('token');
+    if (!validateSession(token, clientIP)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Invalid session' }));
+      return;
+    }
+    
+    const miners = [];
+    for (const [id, miner] of globalStats.activeMiners) {
+      miners.push({
+        id,
+        ip: miner.ip,
+        hashrate: miner.hashrate,
+        hashes: miner.hashes,
+        connected: miner.connected,
+        lastUpdate: miner.lastUpdate
+      });
+    }
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      config: {
+        wallet: CONFIG.pool.wallet,
+        difficulty: CONFIG.pool.difficulty,
+        workerName: CONFIG.pool.workerName,
+        pool: `${CONFIG.pool.host}:${CONFIG.pool.port}`
+      },
+      pool: {
+        connected: poolConnected,
+        authenticated: poolAuthenticated,
+        currentJobId: currentJob?.job_id || null,
+        recentJobsCount: recentJobs.size
+      },
+      stats: {
+        uptime: globalStats.uptime,
+        totalConnections: globalStats.totalConnections,
+        activeMiners: globalStats.activeMiners.size,
+        totalHashes: globalStats.totalHashes,
+        totalShares: globalStats.totalShares,
+        acceptedShares: globalStats.acceptedShares,
+        rejectedShares: globalStats.rejectedShares
+      },
+      miners,
+      security: {
+        activeSessions: security.sessions.size,
+        blockedIPs: security.failedAttempts.size
+      }
+    }));
     return;
   }
   
@@ -678,16 +895,18 @@ function generateOwnerLoginHTML() {
     .back { margin-top: 1.5rem; }
     .back a { color: #8b949e; text-decoration: none; }
     .back a:hover { color: #6ee7ff; }
+    .security-note { margin-top: 1rem; font-size: 0.8rem; color: #6b7280; }
   </style>
 </head>
 <body>
   <div class="login-box">
     <h1>🔐 Owner Panel</h1>
     <p class="subtitle">Enter PIN to access</p>
-    <form action="/owner/panel" method="GET">
+    <form action="/owner/login" method="GET">
       <input type="password" name="pin" placeholder="••••" maxlength="10" required autofocus>
-      <button type="submit">Unlock</button>
+      <button type="submit">🔓 Unlock</button>
     </form>
+    <p class="security-note">🛡️ Protected by rate limiting<br>5 failed attempts = 5 min lockout</p>
     <div class="back"><a href="/">← Back to Dashboard</a></div>
   </div>
 </body>
@@ -699,6 +918,7 @@ function generateOwnerLoginHTML() {
 // =============================================================================
 function generateOwnerPanelHTML(pin) {
   const moUrl = `https://moneroocean.stream/#/dashboard?addr=${CONFIG.pool.wallet}`;
+  const token = pin;  // Now using session token
   
   return `<!DOCTYPE html>
 <html lang="en">
@@ -709,84 +929,241 @@ function generateOwnerPanelHTML(pin) {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); color: #e6edf3; min-height: 100vh; padding: 2rem; }
-    .container { max-width: 900px; margin: 0 auto; }
+    .container { max-width: 1000px; margin: 0 auto; }
     h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-    .subtitle { color: #8b949e; margin-bottom: 2rem; }
+    .subtitle { color: #8b949e; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; }
+    .session-info { font-size: 0.8rem; color: #3fb950; }
     .card { background: rgba(255,255,255,0.05); border: 1px solid #30363d; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
     .card h3 { color: #f7931a; font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
-    .wallet-box { background: #21262d; border-radius: 8px; padding: 1rem; word-break: break-all; font-family: monospace; font-size: 0.9rem; color: #6ee7ff; margin-bottom: 1rem; }
+    .wallet-box { background: #21262d; border-radius: 8px; padding: 1rem; word-break: break-all; font-family: monospace; font-size: 0.85rem; color: #6ee7ff; margin-bottom: 1rem; user-select: all; }
+    .config-row { display: flex; gap: 1rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap; }
+    .config-label { color: #8b949e; min-width: 100px; }
+    .config-value { color: #6ee7ff; font-family: monospace; background: #21262d; padding: 0.5rem 1rem; border-radius: 6px; }
     .link { display: inline-block; padding: 0.75rem 1.5rem; background: linear-gradient(135deg, #238636, #2ea043); border-radius: 8px; color: white; text-decoration: none; font-weight: bold; margin-right: 0.5rem; margin-bottom: 0.5rem; }
     .link:hover { background: linear-gradient(135deg, #2ea043, #3fb950); }
     .link.orange { background: linear-gradient(135deg, #f7931a, #f9a825); }
     .link.blue { background: linear-gradient(135deg, #1f6feb, #388bfd); }
-    input[type="text"] { width: 100%; padding: 1rem; font-size: 0.9rem; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; margin-bottom: 1rem; font-family: monospace; }
+    .link.red { background: linear-gradient(135deg, #da3633, #f85149); }
+    input[type="text"], input[type="number"] { width: 100%; padding: 0.75rem 1rem; font-size: 0.9rem; background: #21262d; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; font-family: monospace; }
     input:focus { outline: none; border-color: #6ee7ff; }
-    .btn { padding: 0.75rem 1.5rem; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; }
+    .input-group { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .input-group input { flex: 1; }
+    .btn { padding: 0.75rem 1.5rem; font-size: 0.9rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; white-space: nowrap; }
     .btn-primary { background: linear-gradient(135deg, #238636, #2ea043); color: white; }
     .btn-primary:hover { background: linear-gradient(135deg, #2ea043, #3fb950); }
-    .status { padding: 1rem; border-radius: 8px; margin-top: 1rem; display: none; }
+    .btn-secondary { background: #30363d; color: #e6edf3; }
+    .status { padding: 0.75rem; border-radius: 8px; margin-top: 0.5rem; display: none; font-size: 0.9rem; }
     .status.success { display: block; background: rgba(63, 185, 80, 0.2); border: 1px solid #3fb950; color: #3fb950; }
     .status.error { display: block; background: rgba(248, 81, 73, 0.2); border: 1px solid #f85149; color: #f85149; }
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem; }
     .stat { text-align: center; padding: 1rem; background: #21262d; border-radius: 8px; }
     .stat .value { font-size: 1.5rem; font-weight: bold; color: #6ee7ff; }
-    .stat .label { color: #8b949e; font-size: 0.8rem; }
-    .back { margin-top: 2rem; }
+    .stat .value.green { color: #3fb950; }
+    .stat .value.red { color: #f85149; }
+    .stat .label { color: #8b949e; font-size: 0.75rem; margin-top: 0.25rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+    .back { margin-top: 2rem; display: flex; justify-content: space-between; }
     .back a { color: #8b949e; text-decoration: none; }
     .back a:hover { color: #6ee7ff; }
+    .miners-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    .miners-table th, .miners-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #30363d; }
+    .miners-table th { color: #8b949e; font-weight: normal; font-size: 0.8rem; }
+    .miners-table td { font-family: monospace; font-size: 0.85rem; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>👑 Owner Panel</h1>
-    <p class="subtitle">Manage your mining operation</p>
-    
-    <div class="card">
-      <h3>💰 Current Wallet</h3>
-      <div class="wallet-box">${CONFIG.pool.wallet}</div>
-      <a href="${moUrl}" target="_blank" class="link orange">📊 View on MoneroOcean</a>
-      <a href="https://xmrchain.net/search?value=${CONFIG.pool.wallet}" target="_blank" class="link blue">🔍 Blockchain Explorer</a>
+    <div class="subtitle">
+      <span>Manage your mining operation</span>
+      <span class="session-info">🔒 Secure session active</span>
     </div>
     
     <div class="card">
-      <h3>📊 Mining Stats</h3>
-      <div class="stats">
-        <div class="stat">
-          <div class="value">${globalStats.activeMiners.size}</div>
-          <div class="label">Active Miners</div>
+      <h3>💰 Wallet & Links</h3>
+      <div class="wallet-box" onclick="navigator.clipboard.writeText(this.textContent)">${CONFIG.pool.wallet}</div>
+      <a href="${moUrl}" target="_blank" class="link orange">📊 MoneroOcean Dashboard</a>
+      <a href="https://xmrchain.net/search?value=${CONFIG.pool.wallet}" target="_blank" class="link blue">🔍 Blockchain Explorer</a>
+    </div>
+    
+    <div class="grid-2">
+      <div class="card">
+        <h3>📊 Mining Stats</h3>
+        <div class="stats">
+          <div class="stat">
+            <div class="value">${globalStats.activeMiners.size}</div>
+            <div class="label">Active Miners</div>
+          </div>
+          <div class="stat">
+            <div class="value green">${globalStats.acceptedShares}</div>
+            <div class="label">Accepted</div>
+          </div>
+          <div class="stat">
+            <div class="value red">${globalStats.rejectedShares}</div>
+            <div class="label">Rejected</div>
+          </div>
+          <div class="stat">
+            <div class="value">${globalStats.totalShares}</div>
+            <div class="label">Total Submitted</div>
+          </div>
         </div>
-        <div class="stat">
-          <div class="value">${globalStats.acceptedShares}</div>
-          <div class="label">Accepted Shares</div>
+      </div>
+      
+      <div class="card">
+        <h3>🌐 Pool Connection</h3>
+        <div class="config-row">
+          <span class="config-label">Status:</span>
+          <span class="config-value">${poolAuthenticated ? '🟢 Connected' : poolConnected ? '🟡 Connecting...' : '🔴 Disconnected'}</span>
         </div>
-        <div class="stat">
-          <div class="value">${globalStats.rejectedShares}</div>
-          <div class="label">Rejected Shares</div>
+        <div class="config-row">
+          <span class="config-label">Pool:</span>
+          <span class="config-value">${CONFIG.pool.host}:${CONFIG.pool.port}</span>
         </div>
-        <div class="stat">
-          <div class="value">${formatUptime(globalStats.uptime)}</div>
-          <div class="label">Uptime</div>
+        <div class="config-row">
+          <span class="config-label">Difficulty:</span>
+          <span class="config-value">${CONFIG.pool.difficulty.toLocaleString()}</span>
+        </div>
+        <div class="config-row">
+          <span class="config-label">Worker:</span>
+          <span class="config-value">${CONFIG.pool.workerName}</span>
+        </div>
+        <div class="config-row">
+          <span class="config-label">Uptime:</span>
+          <span class="config-value">${formatUptime(globalStats.uptime)}</span>
         </div>
       </div>
     </div>
     
+    <div class="grid-2">
+      <div class="card">
+        <h3>⚙️ Change Difficulty</h3>
+        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Lower = find shares faster. Range: 1000 - 1000000</p>
+        <div class="input-group">
+          <input type="number" id="newDifficulty" value="${CONFIG.pool.difficulty}" min="1000" max="1000000" step="1000">
+          <button class="btn btn-primary" onclick="updateDifficulty()">💾 Update</button>
+        </div>
+        <div class="input-group" style="margin-top: 0.5rem;">
+          <button class="btn btn-secondary" onclick="setDiff(5000)">5K (Fast)</button>
+          <button class="btn btn-secondary" onclick="setDiff(10000)">10K</button>
+          <button class="btn btn-secondary" onclick="setDiff(50000)">50K</button>
+          <button class="btn btn-secondary" onclick="setDiff(100000)">100K</button>
+        </div>
+        <div id="diffStatus" class="status"></div>
+      </div>
+      
+      <div class="card">
+        <h3>👷 Change Worker Name</h3>
+        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Identifies your miner group on the pool.</p>
+        <div class="input-group">
+          <input type="text" id="newWorker" value="${CONFIG.pool.workerName}" maxlength="32">
+          <button class="btn btn-primary" onclick="updateWorker()">💾 Update</button>
+        </div>
+        <div id="workerStatus" class="status"></div>
+      </div>
+    </div>
+    
     <div class="card">
-      <h3>⚙️ Change Wallet</h3>
-      <p style="color: #8b949e; margin-bottom: 1rem;">⚠️ This will reconnect to the pool with the new wallet.</p>
-      <input type="text" id="newWallet" placeholder="Enter new Monero wallet address (95 characters)">
-      <button class="btn btn-primary" onclick="updateWallet()">💾 Update Wallet</button>
-      <div id="status" class="status"></div>
+      <h3>💼 Change Wallet</h3>
+      <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">⚠️ This will reconnect to the pool. Double-check the address!</p>
+      <div class="input-group">
+        <input type="text" id="newWallet" placeholder="Enter new Monero wallet address (95 characters)">
+        <button class="btn btn-primary" onclick="updateWallet()">💾 Update</button>
+      </div>
+      <div id="walletStatus" class="status"></div>
+    </div>
+    
+    <div class="card">
+      <h3>🖥️ Connected Miners (${globalStats.activeMiners.size})</h3>
+      <table class="miners-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>IP Address</th>
+            <th>Hashrate</th>
+            <th>Shares</th>
+            <th>Connected</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${Array.from(globalStats.activeMiners.entries()).map(([id, m]) => `
+            <tr>
+              <td>#${id}</td>
+              <td>${m.ip}</td>
+              <td>${(m.hashrate || 0).toFixed(1)} H/s</td>
+              <td>${m.hashes || 0}</td>
+              <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="5" style="color:#8b949e;text-align:center;">No miners connected</td></tr>'}
+        </tbody>
+      </table>
     </div>
     
     <div class="back">
       <a href="/">← Back to Dashboard</a>
+      <a href="/owner" class="link red">🚪 Logout</a>
     </div>
   </div>
   
   <script>
+    const TOKEN = '${token}';
+    
+    function setDiff(val) {
+      document.getElementById('newDifficulty').value = val;
+    }
+    
+    async function updateDifficulty() {
+      const diff = document.getElementById('newDifficulty').value;
+      const status = document.getElementById('diffStatus');
+      
+      try {
+        const res = await fetch('/owner/api/update-difficulty?token=' + TOKEN + '&difficulty=' + diff);
+        const data = await res.json();
+        
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ Difficulty updated to ' + data.difficulty + '! Reconnecting...';
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
+    async function updateWorker() {
+      const worker = document.getElementById('newWorker').value.trim();
+      const status = document.getElementById('workerStatus');
+      
+      if (!worker) {
+        status.className = 'status error';
+        status.textContent = '❌ Worker name cannot be empty';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/owner/api/update-worker?token=' + TOKEN + '&worker=' + encodeURIComponent(worker));
+        const data = await res.json();
+        
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '✅ Worker name updated!';
+        } else {
+          status.className = 'status error';
+          status.textContent = '❌ ' + (data.error || 'Failed');
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '❌ Error: ' + e.message;
+      }
+    }
+    
     async function updateWallet() {
       const wallet = document.getElementById('newWallet').value.trim();
-      const status = document.getElementById('status');
+      const status = document.getElementById('walletStatus');
       
       if (!wallet || wallet.length < 90) {
         status.className = 'status error';
@@ -795,7 +1172,7 @@ function generateOwnerPanelHTML(pin) {
       }
       
       try {
-        const res = await fetch('/owner/api/update-wallet?pin=${pin}&wallet=' + encodeURIComponent(wallet));
+        const res = await fetch('/owner/api/update-wallet?token=' + TOKEN + '&wallet=' + encodeURIComponent(wallet));
         const data = await res.json();
         
         if (data.success) {
@@ -804,13 +1181,16 @@ function generateOwnerPanelHTML(pin) {
           setTimeout(() => location.reload(), 2000);
         } else {
           status.className = 'status error';
-          status.textContent = '❌ ' + (data.error || 'Failed to update wallet');
+          status.textContent = '❌ ' + (data.error || 'Failed');
         }
       } catch (e) {
         status.className = 'status error';
         status.textContent = '❌ Error: ' + e.message;
       }
     }
+    
+    // Auto-refresh stats every 30 seconds
+    setTimeout(() => location.reload(), 30000);
   </script>
 </body>
 </html>`;

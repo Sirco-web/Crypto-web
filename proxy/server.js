@@ -24,7 +24,9 @@ const CONFIG = {
     port: parseInt(process.env.POOL_PORT) || 10128,
     wallet: process.env.WALLET || '43fx9ijTgKESpbsYjukgHiNDLqoZXnkuZVyBnRkNmbCFDz43us6qtdNM1nSSYJ1AUdUSXbTBn2k8rVWBWB4zRfDaGaiBYUQ',
     workerName: process.env.WORKER_NAME || 'CombinedWebMiners',
-    password: 'x'
+    // Fixed difficulty 10000 = shares found faster, less stale shares
+    // Format: "x:fixed_diff_DIFFICULTY" for MoneroOcean
+    password: 'x:fixed_diff_10000'
   },
   
   // Paths

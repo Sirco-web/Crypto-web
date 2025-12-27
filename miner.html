@@ -156,11 +156,7 @@
     // =========================================================================
     // Determine WebSocket URL for proxy
     function getProxyWsUrl() {
-      if (CONFIG.PROXY_URL && CONFIG.PROXY_URL !== 'auto') {
-        return CONFIG.PROXY_URL.replace('/proxy', '');
-      }
-      const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-      return wsProtocol + location.hostname + ':8892';
+      return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app';
     }
     
     var rightProxy = getProxyWsUrl();

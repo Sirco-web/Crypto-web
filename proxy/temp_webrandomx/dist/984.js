@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk=self.webpackChunk||[]).push([[984],{984:(e,s,a)=>{a.r(s),a.d(s,{default:()=>c});const c="wasm/c96e73d337e49e63f31f3a51d70ceb27.wasm"}}]);

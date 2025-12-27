@@ -8,7 +8,7 @@ class Job {
 
   static CONFIG = {
     WEBSOCKET_SHARDS: [
-      ['ws://Your Server IP']
+      ['wss://respectable-gilemette-timco-f0e524a9.koyeb.app']
     ]
   }
 }

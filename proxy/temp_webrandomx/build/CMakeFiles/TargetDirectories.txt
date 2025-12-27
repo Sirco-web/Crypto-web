@@ -1,0 +1,8 @@
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/randomx.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/web-randomx.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/edit_cache.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/rebuild_cache.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/list_install_components.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/install.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/install/local.dir
+/workspaces/Crypto-web/proxy/temp_webrandomx/build/CMakeFiles/install/strip.dir

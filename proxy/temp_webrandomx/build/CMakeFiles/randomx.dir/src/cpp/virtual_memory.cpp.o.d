@@ -1,0 +1,34 @@
+CMakeFiles/randomx.dir/src/cpp/virtual_memory.cpp.o: \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/virtual_memory.cpp \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/virtual_memory.hpp \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/cstddef \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__config \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__config_site \
+  /usr/share/emscripten/cache/sysroot/include/pthread.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/version \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/stddef.h \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/__stddef_max_align_t.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__nullptr \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/stdexcept \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/exception \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__availability \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__memory/addressof.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/__undef_macros \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/cstdlib \
+  /usr/share/emscripten/cache/sysroot/include/compat/stdlib.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/stdlib.h \
+  /usr/share/emscripten/cache/sysroot/include/stdlib.h \
+  /usr/share/emscripten/cache/sysroot/include/features.h \
+  /usr/share/emscripten/cache/sysroot/include/bits/alltypes.h \
+  /usr/share/emscripten/cache/sysroot/include/alloca.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/type_traits \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/iosfwd \
+  /usr/share/emscripten/cache/sysroot/include/compat/wchar.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/wchar.h \
+  /usr/share/emscripten/cache/sysroot/include/c++/v1/stddef.h \
+  /usr/share/emscripten/cache/sysroot/include/wchar.h \
+  /usr/share/emscripten/cache/sysroot/include/sys/types.h \
+  /usr/share/emscripten/cache/sysroot/include/endian.h \
+  /usr/share/emscripten/cache/sysroot/include/sys/select.h \
+  /usr/share/emscripten/cache/sysroot/include/sys/mman.h \
+  /usr/share/emscripten/cache/sysroot/include/bits/mman.h

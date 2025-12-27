@@ -1,0 +1,27 @@
+CMakeFiles/randomx.dir/src/cpp/argon2_simd.c.o: \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/argon2_simd.c \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/stdint.h \
+  /usr/share/emscripten/cache/sysroot/include/stdint.h \
+  /usr/share/emscripten/cache/sysroot/include/bits/alltypes.h \
+  /usr/share/emscripten/cache/sysroot/include/bits/stdint.h \
+  /usr/share/emscripten/cache/sysroot/include/compat/string.h \
+  /usr/share/emscripten/cache/sysroot/include/string.h \
+  /usr/share/emscripten/cache/sysroot/include/features.h \
+  /usr/share/emscripten/cache/sysroot/include/strings.h \
+  /usr/share/emscripten/cache/sysroot/include/compat/stdlib.h \
+  /usr/share/emscripten/cache/sysroot/include/stdlib.h \
+  /usr/share/emscripten/cache/sysroot/include/alloca.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/argon2.h \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/stddef.h \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/__stddef_max_align_t.h \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/limits.h \
+  /usr/share/emscripten/cache/sysroot/include/limits.h \
+  /usr/share/emscripten/cache/sysroot/include/bits/limits.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/argon2_core.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/blamka-round-simd.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/blake2-impl.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/endian.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/intrin_wasm_simd.hpp \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/wasm_simd128.h \
+  /usr/lib/llvm-15/lib/clang/15.0.7/include/stdbool.h \
+  /workspaces/Crypto-web/proxy/temp_webrandomx/src/cpp/blake2.h

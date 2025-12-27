@@ -1,0 +1,1 @@
+/usr/bin/em++ -O3 -DNDEBUG -os -s WASM=1 -s MODULARIZE=1 -s WASM_BIGINT -s TOTAL_MEMORY=272MB -msimd128 -s EXPORTED_FUNCTIONS="['_free', '_malloc']" @CMakeFiles/web-randomx.dir/objects1.rsp -o web-randomx.js @CMakeFiles/web-randomx.dir/linkLibs.rsp

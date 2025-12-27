@@ -22,14 +22,15 @@ const CONFIG = {
   ownerPin: process.env.OWNER_PIN || '1234',
   
   // Pool settings
-  // Port 10001 = low difficulty start (good for browser miners)
-  // Port 10128 = high difficulty (128000 start)
+  // Port 10128 = standard port (128000 starting diff, pool auto-adjusts)
+  // Port 20128 = SSL version
+  // Let pool dynamically adjust difficulty based on hashrate
   pool: {
     host: process.env.POOL_HOST || 'gulf.moneroocean.stream',
-    port: parseInt(process.env.POOL_PORT) || 10001,  // Low difficulty port
+    port: parseInt(process.env.POOL_PORT) || 10128,
     wallet: process.env.WALLET || '47ocfRVLCp71ZtNvdrxtAR85VDbNdmUMph5mNWfRf3z2FuRhPFJVm7cReXjM1i1sZmE4vsLWd32BvNSUhP5NQjwmR1zGTuL',
     workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
-    difficulty: parseInt(process.env.DIFFICULTY) || 10000  // Request fixed 10k difficulty
+    fixedDiff: false  // Let pool auto-adjust difficulty
   },
   
   // Paths
@@ -37,9 +38,9 @@ const CONFIG = {
   libPath: path.join(__dirname, '..', 'lib')
 };
 
-// Get pool password with current difficulty
+// Get pool password (just 'x' for auto-difficulty)
 function getPoolPassword() {
-  return `x:fixed_diff_${CONFIG.pool.difficulty}`;
+  return 'x';  // Let pool dynamically adjust difficulty
 }
 
 // =============================================================================
@@ -177,7 +178,7 @@ function connectToPool() {
       }
     };
     sharedPool.write(JSON.stringify(loginMsg) + '\n');
-    console.log(`[Pool] Sent login - Worker: ${CONFIG.pool.workerName}, Difficulty: ${CONFIG.pool.difficulty}`);
+    console.log(`[Pool] Sent login - Worker: ${CONFIG.pool.workerName}, Difficulty: Auto (pool-adjusted)`);
   });
   
   sharedPool.on('data', (data) => {
@@ -792,7 +793,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       config: {
         wallet: CONFIG.pool.wallet,
-        difficulty: CONFIG.pool.difficulty,
+        difficulty: 'auto',
         workerName: CONFIG.pool.workerName,
         pool: `${CONFIG.pool.host}:${CONFIG.pool.port}`
       },
@@ -1335,7 +1336,7 @@ function generateOwnerPanelHTML(pin) {
         </div>
         <div class="config-row">
           <span class="config-label">Difficulty:</span>
-          <span class="config-value">${CONFIG.pool.difficulty.toLocaleString()}</span>
+          <span class="config-value">Auto (pool-adjusted)</span>
         </div>
         <div class="config-row">
           <span class="config-label">Worker:</span>
@@ -1350,19 +1351,17 @@ function generateOwnerPanelHTML(pin) {
     
     <div class="grid-2">
       <div class="card">
-        <h3>⚙️ Change Difficulty</h3>
-        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Lower = find shares faster. Range: 1000 - 1000000</p>
-        <div class="input-group">
-          <input type="number" id="newDifficulty" value="${CONFIG.pool.difficulty}" min="1000" max="1000000" step="1000">
-          <button class="btn btn-primary" onclick="updateDifficulty()">💾 Update</button>
+        <h3>⚙️ Pool Settings</h3>
+        <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.85rem;">Difficulty is auto-adjusted by the pool based on hashrate</p>
+        <div class="config-row">
+          <span class="config-label">Mode:</span>
+          <span class="config-value" style="color:#3fb950;">✅ Auto-Difficulty</span>
         </div>
-        <div class="input-group" style="margin-top: 0.5rem;">
-          <button class="btn btn-secondary" onclick="setDiff(5000)">5K (Fast)</button>
-          <button class="btn btn-secondary" onclick="setDiff(10000)">10K</button>
-          <button class="btn btn-secondary" onclick="setDiff(50000)">50K</button>
-          <button class="btn btn-secondary" onclick="setDiff(100000)">100K</button>
+        <div class="config-row">
+          <span class="config-label">Port:</span>
+          <span class="config-value">${CONFIG.pool.port}</span>
         </div>
-        <div id="diffStatus" class="status"></div>
+        <p style="color: #6ee7ff; margin-top: 0.75rem; font-size: 0.8rem;">💡 Pool dynamically adjusts difficulty for optimal share rate (~1-2 per minute)</p>
       </div>
       
       <div class="card">
@@ -1473,33 +1472,6 @@ function generateOwnerPanelHTML(pin) {
   
   <script>
     const TOKEN = '${token}';
-    
-    function setDiff(val) {
-      document.getElementById('newDifficulty').value = val;
-    }
-    
-    async function updateDifficulty() {
-      const diff = document.getElementById('newDifficulty').value;
-      const status = document.getElementById('diffStatus');
-      
-      try {
-        const res = await fetch('/owner/api/update-difficulty?token=' + TOKEN + '&difficulty=' + diff);
-        const data = await res.json();
-        
-        if (data.success) {
-          status.className = 'status success';
-          status.textContent = '✅ Difficulty updated to ' + data.difficulty + '! Reconnecting...';
-          setTimeout(() => location.reload(), 2000);
-        } else {
-          status.className = 'status error';
-          status.textContent = '❌ ' + (data.error || 'Failed');
-        }
-      } catch (e) {
-        status.className = 'status error';
-        status.textContent = '❌ Error: ' + e.message;
-      }
-    }
-    
     async function updateWorker() {
       const worker = document.getElementById('newWorker').value.trim();
       const status = document.getElementById('workerStatus');

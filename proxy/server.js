@@ -293,17 +293,33 @@ function handlePoolMessage(msg) {
     // CRITICAL: Save the worker ID from pool - we MUST use this for all submits!
     poolWorkerId = msg.result.id;
     console.log('[Pool] ✅ Authenticated! Worker ID:', poolWorkerId);
-    console.log('[Pool] Job target (difficulty):', msg.result.job.target);
+    const job = msg.result.job;
+    console.log('[Pool] Job received:', JSON.stringify({
+      job_id: job.job_id,
+      blob: job.blob ? `${job.blob.substring(0, 20)}...` : 'MISSING',
+      target: job.target,
+      seed_hash: job.seed_hash ? `${job.seed_hash.substring(0, 20)}...` : 'MISSING',
+      height: job.height,
+      algo: job.algo
+    }));
     poolAuthenticated = true;  // NOW we are truly ready
-    currentJob = msg.result.job;
+    currentJob = job;
     addRecentJob(currentJob);
     broadcastToMiners({ type: 'authed', params: { hashes: 0 } });
     broadcastJob(currentJob);
   }
   // New job from pool
   else if (msg.method === 'job') {
-    console.log('[Pool] New job received, target:', msg.params.target);
-    currentJob = msg.params;
+    const job = msg.params;
+    console.log('[Pool] New job received:', JSON.stringify({
+      job_id: job.job_id,
+      blob: job.blob ? `${job.blob.substring(0, 20)}...` : 'MISSING',
+      target: job.target,
+      seed_hash: job.seed_hash ? `${job.seed_hash.substring(0, 20)}...` : 'MISSING',
+      height: job.height,
+      algo: job.algo
+    }));
+    currentJob = job;
     addRecentJob(currentJob);
     broadcastJob(currentJob);
   }
@@ -400,6 +416,14 @@ function broadcastJob(job) {
       algo: job.algo || 'rx/0'
     }
   };
+  console.log('[Broadcast] Sending job to miners:', JSON.stringify({
+    job_id: msg.params.job_id,
+    blob: msg.params.blob ? 'present' : 'MISSING',
+    target: msg.params.target,
+    seed_hash: msg.params.seed_hash ? 'present' : 'MISSING',
+    height: msg.params.height,
+    algo: msg.params.algo
+  }));
   broadcastToMiners(msg);
 }
 

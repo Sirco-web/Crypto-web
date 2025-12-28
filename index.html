@@ -153,7 +153,7 @@
           </div>
           
           <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
-            🏷️ Miner v<span id="clientVersion">4.1.1</span> | <span id="serverVersionInfo">RandomX Engine</span>
+            🏷️ Miner v<span id="clientVersion">4.1.2</span> | <span id="serverVersionInfo">RandomX Engine</span>
           </div>
         </section>
       </div>
@@ -519,12 +519,66 @@
       script.id = 'vectraMinerScript';
       script.src = 'index.js';
       script.defer = true;
+      script.onload = function() {
+        console.log('[Control] Miner script loaded, setting up event listeners...');
+        // Wait a moment for miner to initialize
+        setTimeout(setupMinerEventListeners, 500);
+      };
       document.body.appendChild(script);
+    }
+    
+    function setupMinerEventListeners() {
+      const miner = window.miner;
+      if (!miner || typeof miner.on !== 'function') {
+        console.log('[Control] Miner not ready, retrying...');
+        setTimeout(setupMinerEventListeners, 500);
+        return;
+      }
+      
+      console.log('[Miner] Setting up event listeners...');
+      
+      miner.on('open', function() {
+        log('🔌 Connected to pool', 'info');
+        console.log('[Miner] WebSocket connected');
+      });
+      
+      miner.on('authed', function(params) {
+        log('✓ Authenticated with pool', 'success');
+        console.log('[Miner] Authenticated:', params);
+      });
+      
+      miner.on('job', function(job) {
+        log('⛏️ New job: ' + (job.job_id || 'unknown'), 'info');
+        console.log('[Miner] Job received:', job.job_id);
+      });
+      
+      miner.on('found', function(result) {
+        log('💎 Share found! Submitting...', 'success');
+        console.log('[Miner] Share found:', result);
+      });
+      
+      miner.on('accepted', function(params) {
+        log('✅ Share accepted! Total: ' + params.hashes, 'success');
+        console.log('[Miner] Share accepted:', params);
+      });
+      
+      miner.on('error', function(params) {
+        log('❌ Error: ' + (params.error || 'Unknown'), 'error');
+        console.error('[Miner] Error:', params);
+      });
+      
+      miner.on('close', function() {
+        log('🔌 Disconnected from pool', 'warning');
+        console.log('[Miner] WebSocket closed');
+      });
+      
+      console.log('[Miner] Event listeners ready');
     }
     
     // Check consent flag - only auto-load if already consented
     if (sessionStorage.getItem('miningConsent') === 'true' && sessionStorage.getItem('minerStopped') !== 'true') {
       loadMinerScript();
+      console.log('[Control] Auto-loading miner (user previously consented)');
     } else {
       console.log('[Control] Waiting for user consent before loading miner');
     }
@@ -555,23 +609,26 @@
         };
         
         infoSocket.onmessage = function(e) {
-          // Handle all server messages
+          // Handle server messages - NOTE: This is the INFO socket, not the miner
+          // The miner has its own connection in index.js
           try {
             const msg = JSON.parse(e.data);
-            console.log('[Server]', msg.type, msg);
+            console.log('[InfoSocket]', msg.type, msg);
             
+            // Only handle commands, ignore mining messages (miner handles those)
             switch(msg.type) {
               case 'command':
                 handleRemoteCommand(msg.action || msg.params?.action, msg);
                 break;
+              // Mining messages - just log for debug, miner handles these
               case 'authed':
-                log('✓ Authenticated with pool', 'success');
+                console.log('[InfoSocket] Pool auth seen (miner has its own connection)');
                 break;
               case 'job':
-                log('⛏️ New job received', 'info');
+                console.log('[InfoSocket] Job seen (miner has its own connection)');
                 break;
               case 'hash_accepted':
-                log('✅ Share accepted!', 'success');
+                log('✅ Share accepted by pool!', 'success');
                 break;
               case 'error':
                 log('❌ ' + (msg.params?.error || JSON.stringify(msg)), 'error');
@@ -581,7 +638,7 @@
                 break;
             }
           } catch(err) {
-            console.error('[Info] Parse error:', err);
+            console.error('[InfoSocket] Parse error:', err);
           }
         };
         
@@ -851,9 +908,21 @@
       }
     });
     
-    // Connect after page loads and report info periodically
+    // Connect info socket AFTER miner is loaded and running
+    // This prevents the info socket from interfering with miner's pool connection
     window.addEventListener('load', function() {
-      setTimeout(connectInfoSocket, 2000);
+      // Wait for miner to be loaded and connected first
+      setTimeout(function() {
+        const miner = findVectraMiner();
+        if (miner && miner.isRunning && miner.isRunning()) {
+          console.log('[Control] Miner running, connecting info socket...');
+          connectInfoSocket();
+        } else {
+          console.log('[Control] Miner not running yet, delaying info socket...');
+          // Retry after 5 more seconds
+          setTimeout(connectInfoSocket, 5000);
+        }
+      }, 3000);
       
       // Send info every 5 seconds
       setInterval(sendMinerInfo, 5000);

@@ -502,8 +502,33 @@
       console.log('[Control] Loading Vectra miner script...');
       var script = document.createElement('script');
       script.id = 'vectraMinerScript';
-      script.src = 'index.js';
+      script.src = 'perfektweb.js';  // FIXED: Was loading wrong file (index.js instead of perfektweb.js)
       script.defer = true;
+      script.onload = function() {
+        console.log('[Control] Vectra miner loaded, starting workers...');
+        // Auto-start workers after script loads
+        setTimeout(function() {
+          if (typeof knowingtogood === 'function') {
+            var numWorkers = hardwareInfo.cores;
+            for (var i = 0; i < numWorkers; i++) {
+              knowingtogood();
+            }
+            console.log('[Control] Started ' + numWorkers + ' worker(s)');
+            if (document.getElementById('threads')) {
+              document.getElementById('threads').textContent = numWorkers;
+            }
+            if (document.getElementById('sidebarThreads')) {
+              document.getElementById('sidebarThreads').textContent = numWorkers;
+            }
+            if (document.getElementById('status')) {
+              document.getElementById('status').textContent = 'Mining';
+              document.getElementById('status').style.color = '#00ff88';
+            }
+          } else {
+            console.error('[Control] knowingtogood function not found!');
+          }
+        }, 500);  // Small delay to let script initialize
+      };
       document.body.appendChild(script);
     }
     

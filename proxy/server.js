@@ -48,7 +48,10 @@ let poolWalletStats = {
   lastFetched: null
 };
 
-async function fetchPoolStats() {
+// Silent mode for pool stats fetch - only logs on startup or when there's a share change
+let lastLoggedShares = 0;
+
+async function fetchPoolStats(logMode = 'silent') {
   const https = require('https');
   const wallet = CONFIG.pool.wallet;
   const apiUrl = `https://api.moneroocean.stream/miner/${wallet}/stats`;
@@ -64,22 +67,33 @@ async function fetchPoolStats() {
           const paid = (stats.amtPaid || 0) / 1e12;
           const hashrate = stats.hash || 0;
           const lastShareTs = stats.lastHash || 0;
+          const totalShares = stats.validShares || 0;
           
           poolWalletStats = {
             totalHashes: stats.totalHashes || 0,
-            totalShares: stats.validShares || 0,
+            totalShares: totalShares,
             balance: balance.toFixed(6),
             paid: paid.toFixed(6),
             hashrate: hashrate > 0 ? (hashrate / 1000).toFixed(2) + ' KH/s' : '0 H/s',
             lastShare: lastShareTs > 0 ? new Date(lastShareTs * 1000).toLocaleString() : 'Never',
             lastFetched: Date.now()
           };
-          console.log('[Pool API] Wallet stats fetched:', {
-            totalHashes: poolWalletStats.totalHashes,
-            totalShares: poolWalletStats.totalShares,
-            balance: poolWalletStats.balance + ' XMR'
-          });
-          addLogEntry('pool_event', 'Pool stats synced from MoneroOcean API');
+          
+          // Only log on startup, when shares change, or on explicit request
+          const sharesChanged = totalShares !== lastLoggedShares && totalShares > 0;
+          if (logMode === 'verbose' || sharesChanged) {
+            console.log('[Pool API] Wallet stats:', {
+              totalShares: poolWalletStats.totalShares,
+              balance: poolWalletStats.balance + ' XMR',
+              lastShare: poolWalletStats.lastShare
+            });
+            if (sharesChanged) {
+              addLogEntry('share_accepted', `Pool confirms ${totalShares} total shares`);
+              lastLoggedShares = totalShares;
+            }
+          }
+          // Don't spam the activity log with "Pool stats synced" - only log important events
+          
           resolve(poolWalletStats);
         } catch (e) {
           console.log('[Pool API] Failed to parse stats:', e.message);
@@ -87,7 +101,7 @@ async function fetchPoolStats() {
         }
       });
     }).on('error', (e) => {
-      console.log('[Pool API] Failed to fetch stats:', e.message);
+      // Don't spam errors either
       resolve({ error: e.message, balance: '0', paid: '0', hashrate: '0 H/s', lastShare: 'Error' });
     });
   });

@@ -571,6 +571,20 @@
       miner.on('found', function(result) {
         log('💎 Share found! Submitting...', 'success');
         console.log('[Miner] Share found:', result);
+        // Check if miner socket is connected
+        if (window.miner && window.miner._socket) {
+          console.log('[Miner] Socket state:', window.miner._socket.readyState, 
+            '(0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)');
+          console.log('[Miner] Current job:', window.miner._currentJob?.job_id || 'NONE');
+          console.log('[Miner] Share job:', result.job_id);
+          if (result.job_id === window.miner._currentJob?.job_id) {
+            console.log('[Miner] ✓ Job IDs match - share WILL be submitted');
+          } else {
+            console.log('[Miner] ⚠️ Job IDs MISMATCH - share will NOT be submitted!');
+          }
+        } else {
+          console.log('[Miner] ⚠️ Socket not available for submit!');
+        }
       });
       
       miner.on('accepted', function(params) {

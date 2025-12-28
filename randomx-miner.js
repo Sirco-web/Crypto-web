@@ -79,6 +79,8 @@ let currentJob = null;
 let blob = [];
 let variant = 0;
 let height = 0;
+let isReady = false;
+let pendingJob = null;
 
 // Initialize RandomX WASM module
 async function initModule() {
@@ -99,11 +101,14 @@ async function initModule() {
     }
     const jsText = await jsResponse.text();
     
-    // Create a function from the JS module text
-    const moduleFunc = new Function('return ' + jsText)();
+    // The web-randomx.js exports a Module factory function
+    // We need to evaluate it and call Module() with options
+    // The script creates a global 'Module' function
+    const scriptWithExport = jsText + '; Module;';
+    const moduleFactory = eval(scriptWithExport);
     
     // Initialize the module with the WASM binary
-    Module = await moduleFunc({
+    Module = await moduleFactory({
       wasmBinary: wasmBuffer,
       locateFile(path) {
         if (path.endsWith('.wasm')) {
@@ -118,10 +123,20 @@ async function initModule() {
     output = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
     seedInput = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
     
+    isReady = true;
+    
     console.log('[Worker] RandomX WASM initialized successfully');
     
     // Send ready signal (demo uses plain 'ready' string)
     self.postMessage('ready');
+    
+    // If we received a job while loading, start mining now
+    if (pendingJob) {
+      console.log('[Worker] Processing pending job...');
+      setJob(pendingJob);
+      pendingJob = null;
+      work();
+    }
     
   } catch (error) {
     console.error('[Worker] WASM init failed:', error);
@@ -286,6 +301,19 @@ function workThrottled() {
 // Message handler (matches demo's wrapper.js onMessage)
 self.onmessage = function(response) {
   const data = response.data;
+  
+  // If not ready yet, queue the job and wait
+  if (!isReady) {
+    console.log('[Worker] Not ready yet, queuing job:', data.job_id);
+    pendingJob = data;
+    return;
+  }
+  
+  // Validate job data
+  if (!data || !data.blob || !data.job_id) {
+    console.log('[Worker] Invalid job data received');
+    return;
+  }
   
   // Check if new job
   if (!currentJob || currentJob.job_id !== data.job_id) {

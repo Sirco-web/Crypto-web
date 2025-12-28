@@ -104,26 +104,6 @@
             </div>
           </div>
 
-          <!-- CPU/Thread Controls -->
-          <div class="cpu-controls" style="margin: 1rem 0; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
-              <span style="font-weight: 600; color: #e6edf3;">⚙️ CPU Usage</span>
-              <span id="cpuUsageLabel" style="color: #3fb950; font-weight: bold;">100%</span>
-            </div>
-            <input type="range" id="cpuSlider" min="10" max="100" value="100" step="10" 
-              style="width: 100%; height: 8px; background: linear-gradient(90deg, #238636 0%, #f7931a 100%); border-radius: 4px; cursor: pointer;">
-            <div style="display: flex; justify-content: space-between; margin-top: 0.5rem;">
-              <span style="font-size: 0.7rem; color: #8b949e;">🐢 Low</span>
-              <span style="font-size: 0.7rem; color: #8b949e;">🐇 High</span>
-            </div>
-            
-            <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-              <button id="minusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➖ Worker</button>
-              <span id="workerCount" style="display: flex; align-items: center; padding: 0 1rem; background: rgba(255,255,255,0.05); border-radius: 4px; font-weight: bold;">0</span>
-              <button id="plusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➕ Worker</button>
-            </div>
-          </div>
-
           <div class="stats-grid">
             <div class="stat-box"><div class="value" id="rate">0.0 H/s</div><div class="label">H/s</div></div>
             <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
@@ -153,7 +133,7 @@
           </div>
           
           <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
-            🏷️ Miner v<span id="clientVersion">3.7.0</span> | <span id="serverVersionInfo">Vectra RandomX</span>
+            🏷️ Miner v<span id="clientVersion">4.0.0</span> | <span id="serverVersionInfo">RandomX Engine</span>
           </div>
         </section>
       </div>
@@ -170,21 +150,18 @@
     var scriptTag = document.currentScript;
     var workers = [];
     var workerCounter = 0;
-    // These will be overwritten by perfektweb.js but we initialize them for safe access
-    var totalhashes = 0;
-    var acceptedhashes = 0;
     
     // =========================================================================
     // PROXY/POOL CONFIGURATION
     // =========================================================================
-    // Determine WebSocket URL for proxy
+    // Use CONFIG from config.js for all settings
     function getProxyWsUrl() {
-      return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+      return CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
     }
     
     var rightProxy = getProxyWsUrl();
-    var rightPool = CONFIG.POOL || "gulf.moneroocean.stream:10001";
-    var rightalgo = "rx/0"; // RandomX
+    var rightPool = CONFIG.POOL || "gulf.moneroocean.stream:10128";
+    var rightalgo = CONFIG.ALGORITHM || "rx/0"; // RandomX
     
     // =========================================================================
     // HELPERS
@@ -217,53 +194,32 @@
     }
     
     function updateStats() {
-      // Read directly from perfektweb.js global variables
-      const workerCount = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
-      const hashTotal = (typeof totalhashes !== 'undefined') ? totalhashes : 0;
-      const acceptedCount = (typeof acceptedhashes !== 'undefined') ? acceptedhashes : 0;
-      const hashRate = window._currentHashrate || 0;
-      
-      // Main stats display (HTML IDs: rate, total, accepted, thread)
-      $('rate').textContent = fmtNum(hashRate) + ' H/s';
-      $('total').textContent = fmtNum(hashTotal);
-      $('accepted').textContent = acceptedCount;
-      $('thread').textContent = workerCount;
-      
-      // Sidebar stats
-      $('sidebarHashrate').textContent = fmtNum(hashRate) + ' H/s';
-      $('sidebarTotalHashes').textContent = fmtNum(hashTotal);
-      $('sidebarAccepted').textContent = acceptedCount;
-      $('sidebarThreads').textContent = workerCount;
-      
-      // Progress bar
-      $('barFill').style.width = ((hashTotal % 1000) / 10) + '%';
-      $('barText').textContent = 'Mining: ' + fmtNum(hashRate) + ' H/s';
-      
-      // Update internal variables
-      currentHashrate = hashRate;
-      totalHashes = hashTotal;
-      totalAccepted = acceptedCount;
+      $('hashrate').textContent = fmtNum(currentHashrate);
+      $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
+      $('totalHashes').textContent = fmtNum(totalHashes);
+      $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
+      $('acceptedShares').textContent = totalAccepted;
+      $('sidebarAccepted').textContent = totalAccepted;
+      $('threads').textContent = workers.length;
+      $('sidebarThreads').textContent = workers.length;
+      $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
+      $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
     }
     
     // =========================================================================
     // HARDWARE DETECTION
     // =========================================================================
-    // Allow manual core override via URL param: ?cores=8
-    const urlParams = new URLSearchParams(window.location.search);
-    const coreOverride = parseInt(urlParams.get('cores')) || 0;
-    
     const hardwareInfo = {
-      // Use override if provided, otherwise use browser detection (min 4)
-      cores: coreOverride > 0 ? coreOverride : (navigator.hardwareConcurrency || 4),
+      cores: navigator.hardwareConcurrency || 4,
       memory: navigator.deviceMemory || 4,
       isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
       
       detect() {
         $('tuneDevice').textContent = this.isMobile ? '📱 Mobile' : '💻 Desktop';
-        $('tuneCores').textContent = this.cores + (coreOverride > 0 ? ' (manual)' : '');
+        $('tuneCores').textContent = this.cores;
         $('tuneMemory').textContent = this.memory ? this.memory + ' GB' : 'Unknown';
-        $('tuneBadge').textContent = coreOverride > 0 ? 'Override' : 'Detected';
-        log('🔧 Hardware: ' + this.cores + ' cores' + (coreOverride > 0 ? ' (manual override)' : '') + ', ' + (this.memory || '?') + 'GB RAM', 'info');
+        $('tuneBadge').textContent = 'Detected';
+        log('🔧 Hardware: ' + this.cores + ' cores, ' + (this.memory || '?') + 'GB RAM', 'info');
         return this;
       }
     };
@@ -271,79 +227,32 @@
     // =========================================================================
     // CALLBACKS FOR PERFEKTWEB.JS
     // =========================================================================
-    // DEBUG: Monitor perfektweb.js internal state
-    var debugInterval = null;
-    function startDebugMonitor() {
-      if (debugInterval) return;
-      debugInterval = setInterval(function() {
-        try {
-          var debugInfo = [];
-          if (typeof connected !== 'undefined') debugInfo.push('connected=' + connected);
-          if (typeof handshake !== 'undefined') debugInfo.push('handshake=' + handshake);
-          if (typeof totalhashes !== 'undefined') debugInfo.push('totalhashes=' + totalhashes);
-          if (typeof acceptedhashes !== 'undefined') debugInfo.push('acceptedhashes=' + acceptedhashes);
-          if (typeof ws !== 'undefined') debugInfo.push('ws=' + (ws ? 'exists' : 'null'));
-          if (typeof job !== 'undefined') debugInfo.push('job=' + (job ? 'exists' : 'null'));
-          if (typeof workers !== 'undefined') debugInfo.push('workers=' + (workers ? workers.length : 0));
-          if (debugInfo.length > 0) {
-            console.log('[DEBUG perfektweb.js] ' + debugInfo.join(', '));
-          }
-        } catch(e) {}
-      }, 5000);
-    }
-    
-    // GLOBAL CALLBACK - perfektweb.js looks for this on window object
-    window.informWorker = function(worker, workerId) {
+    var informWorker = function(worker, workerId) {
       // Called by perfektweb.js to send initial config to worker
-      console.log('[DEBUG informWorker] Worker #' + workerId + ' - sending config:', {
-        proxy: typeof rightProxy !== 'undefined' ? rightProxy : 'not set',
-        pool: typeof rightPool !== 'undefined' ? rightPool : 'not set',
-        algo: typeof rightalgo !== 'undefined' ? rightalgo : 'not set',
-        wallet: CONFIG.WALLET.substring(0, 20) + '...'
-      });
       log('Worker #' + workerId + ' initialized', 'success');
-      
-      // Start debug monitor
-      startDebugMonitor();
       
       // Send configuration to worker
       worker.postMessage({
         type: 'config',
-        proxy: typeof rightProxy !== 'undefined' ? rightProxy : CONFIG.PROXY_URL,
-        pool: typeof rightPool !== 'undefined' ? rightPool : CONFIG.POOL_URL,
-        algo: typeof rightalgo !== 'undefined' ? rightalgo : 'rx/0',
+        proxy: rightProxy,
+        pool: rightPool,
+        algo: rightalgo,
         wallet: CONFIG.WALLET,
         worker: CONFIG.WORKER_NAME
       });
     };
     
-    // GLOBAL CALLBACK - perfektweb.js calls this when it receives messages from server
-    window.on_servermsg = function(e) {
-      // Messages from pool/proxy - THIS IS CRITICAL FOR SHARE ACCEPTANCE
-      console.log('[DEBUG on_servermsg] Received:', JSON.stringify(e));
+    var on_servermsg = function(e) {
+      // Messages from pool/proxy
       if (e && e.type) {
         switch(e.type) {
           case 'authed':
             log('✓ Authenticated with pool', 'success');
             $('status').textContent = 'Mining';
             $('status').style.color = '#00ff88';
-            handshake = true;
             break;
           case 'job':
-            var jobId = e.job_id || (e.params ? e.params.job_id : null) || 'unknown';
-            log('⛏️ New job received (id: ' + jobId + ')', 'info');
-            // Store the job globally for workers
-            job = e.params || e;
-            console.log('[DEBUG on_servermsg] Job stored:', JSON.stringify(job));
-            // Pass job to all workers
-            if (typeof workers !== 'undefined' && workers && workers.length) {
-              for (var i = 0; i < workers.length; i++) {
-                if (workers[i] && workers[i].postMessage) {
-                  workers[i].postMessage({ type: 'job', job: job });
-                }
-              }
-              console.log('[DEBUG on_servermsg] Job sent to ' + workers.length + ' workers');
-            }
+            log('⛏️ New job received', 'info');
             break;
           case 'accepted':
             totalAccepted++;
@@ -353,23 +262,15 @@
           case 'error':
             log('❌ Error: ' + (e.error || JSON.stringify(e)), 'error');
             break;
-          default:
-            console.log('[DEBUG on_servermsg] Unknown type:', e.type);
         }
       }
     };
     
-    // GLOBAL CALLBACK - perfektweb.js calls this when workers report results
-    window.on_workermsg = function(e, workerId) {
+    var on_workermsg = function(e, workerId) {
       // Messages from mining workers
       if (!e || !e.data) return;
       
       const data = e.data;
-      
-      // DEBUG: Log all messages
-      if (data.type) {
-        console.log('[DEBUG on_workermsg] Worker #' + workerId + ':', data.type, data);
-      }
       
       // Handle different message types
       if (data.type === 'hash' || data.hashrate !== undefined) {
@@ -383,26 +284,7 @@
       }
       
       if (data.type === 'found') {
-        console.log('[DEBUG] 💎 SHARE FOUND! Worker #' + workerId + ', data:', JSON.stringify(data));
         log('💎 Share found by worker #' + workerId, 'success');
-        
-        // CRITICAL: Submit the share to the proxy/pool via WebSocket!
-        if (typeof ws !== 'undefined' && ws && ws.readyState === WebSocket.OPEN) {
-          var submitMsg = JSON.stringify({
-            type: 'submit',
-            params: {
-              job_id: data.job_id,
-              nonce: data.nonce,
-              result: data.result
-            }
-          });
-          ws.send(submitMsg);
-          console.log('[DEBUG] Share submitted:', submitMsg);
-          log('📤 Share submitted to pool', 'info');
-        } else {
-          console.error('[DEBUG] Cannot submit share - WebSocket not connected!');
-          log('⚠️ Cannot submit share - no connection', 'warning');
-        }
       }
       
       if (data.type === 'accepted') {
@@ -438,67 +320,6 @@
       $('status').textContent = 'Connecting...';
       $('status').style.color = '#ffaa00';
       
-      // CRITICAL FIX: First open WebSocket connection to proxy!
-      if (typeof openWebSocket === 'function') {
-        try {
-          console.log('[DEBUG] Opening WebSocket connection to proxy...');
-          openWebSocket();
-          log('WebSocket connection opened', 'success');
-        } catch (e) {
-          console.error('[DEBUG] Error opening WebSocket:', e);
-          log('Error opening WebSocket: ' + e.message, 'error');
-        }
-      } else {
-        console.log('[DEBUG] openWebSocket function not found, trying direct WebSocket creation');
-        log('Warning: openWebSocket not found', 'warning');
-      }
-      
-      // Check if WebSocket was created, if not create our own
-      setTimeout(function() {
-        if (typeof ws === 'undefined' || ws === null) {
-          console.log('[DEBUG] ws is null/undefined, creating fallback WebSocket...');
-          try {
-            ws = new WebSocket(rightProxy);
-            ws.onopen = function() {
-              console.log('[DEBUG] Fallback WebSocket connected!');
-              connected = true;
-              // Send authentication
-              var authMsg = JSON.stringify({
-                type: 'auth',
-                params: {
-                  site_key: CONFIG.WALLET,
-                  user: CONFIG.WORKER_NAME,
-                  algo: rightalgo,
-                  pool: rightPool
-                }
-              });
-              ws.send(authMsg);
-              console.log('[DEBUG] Auth sent:', authMsg);
-            };
-            ws.onmessage = function(evt) {
-              console.log('[DEBUG] WebSocket message:', evt.data);
-              var msg = JSON.parse(evt.data);
-              if (typeof on_servermsg === 'function') {
-                on_servermsg(msg);
-              }
-            };
-            ws.onerror = function(err) {
-              console.error('[DEBUG] WebSocket error:', err);
-              connected = false;
-            };
-            ws.onclose = function() {
-              console.log('[DEBUG] WebSocket closed');
-              connected = false;
-            };
-            log('Fallback WebSocket created', 'info');
-          } catch (e) {
-            console.error('[DEBUG] Failed to create fallback WebSocket:', e);
-          }
-        } else {
-          console.log('[DEBUG] ws exists, WebSocket should be active');
-        }
-      }, 1000);
-      
       // Call knowingtogood from perfektweb.js to start workers
       if (typeof knowingtogood === 'function') {
         try {
@@ -508,7 +329,7 @@
             knowingtogood();
           }
           log('Started ' + numWorkers + ' worker(s)', 'success');
-          $('thread').textContent = numWorkers;
+          $('threads').textContent = numWorkers;
           $('sidebarThreads').textContent = numWorkers;
         } catch (e) {
           log('Error starting miner: ' + e.message, 'error');
@@ -523,41 +344,17 @@
     }
     
     function stopMining() {
+      if (!isMining) return;
+      
       log('Stopping miner...', 'warning');
       isMining = false;
       maxPowerEnabled = false;
-      isMinerStopped = true;
-      sessionStorage.setItem('minerStopped', 'true');
       
-      // METHOD 1: Use perfektweb.js stopMining if different from this function
-      if (typeof window.perfektStopMining === 'function') {
-        try { window.perfektStopMining(); } catch(e) {}
-      }
-      
-      // METHOD 2: Delete all workers via perfektweb.js
-      if (typeof deleteAllWorkers === 'function') {
-        try { deleteAllWorkers(); console.log('[Stop] deleteAllWorkers called'); } catch(e) {}
-      }
-      
-      // METHOD 3: Terminate workers array directly
-      if (typeof workers !== 'undefined' && Array.isArray(workers)) {
-        workers.forEach(function(w) {
-          try { if (w && w.terminate) w.terminate(); } catch(e) {}
-        });
-        workers.length = 0;
-        console.log('[Stop] Workers terminated');
-      }
-      
-      // METHOD 4: Close WebSocket
-      if (typeof ws !== 'undefined' && ws && ws.close) {
-        try { ws.close(); console.log('[Stop] WebSocket closed'); } catch(e) {}
-      }
-      
-      // METHOD 5: Set throttle to max
-      if (typeof throttleMiner !== 'undefined') {
-        throttleMiner = 100;
-      }
-      
+      // Terminate all workers
+      workers.forEach(w => {
+        try { w.terminate(); } catch(e) {}
+      });
+      workers = [];
       workerCounter = 0;
       
       if (uptimeInterval) { clearInterval(uptimeInterval); uptimeInterval = null; }
@@ -570,12 +367,10 @@
       $('maxBtn').textContent = '⚡ MAX POWER';
       $('status').textContent = 'Stopped';
       $('status').style.color = '#ff4444';
-      $('thread').textContent = '0';
+      $('threads').textContent = '0';
       $('sidebarThreads').textContent = '0';
-      if ($('rate')) $('rate').textContent = '0.0 H/s';
-      if ($('workerCount')) $('workerCount').textContent = '0';
       
-      log('Mining stopped completely', 'warning');
+      log('Mining stopped', 'warning');
     }
     
     function enableMaxPower() {
@@ -692,187 +487,20 @@
     });
   </script>
   
-  <!-- RandomX WASM Miner v3.8.0 - Production Ready -->
+  <!-- Vectra Miner -->
   <div id="hash-charts" style="display:none;"></div>
-  <script src="randomx-miner.js"></script>
   <script>
-    // =========================================================================
-    // VECTRA RANDOMX MINER v3.8.0
-    // =========================================================================
-    console.log('[Miner] RandomX WASM Miner v3.8.0');
-    
-    // Track hashrate for stats
-    var lastHashCount = 0;
-    var lastHashTime = Date.now();
-    var calculatedHashrate = 0;
-    
+    // Only load miner if user has consented
     function loadMinerScript() {
-      console.log('[Control] Initializing RandomX miner v3.8.0...');
+      if (document.getElementById('vectraMinerScript')) return; // Already loaded
       
-      // Check if miner was stopped - don't auto-start
-      if (sessionStorage.getItem('minerStopped') === 'true') {
-        console.log('[Control] Miner was stopped, not auto-starting');
-        if (document.getElementById('status')) {
-          document.getElementById('status').textContent = 'Stopped';
-          document.getElementById('status').style.color = '#ff4444';
-        }
-        if (document.getElementById('startBtn')) {
-          document.getElementById('startBtn').disabled = false;
-          document.getElementById('startBtn').textContent = 'Start Mining';
-        }
-        return;
-      }
-      
-      // Vectra uses global variables set BEFORE loading the script
-      // These are already set in the main script block above
-      
-      // Open WebSocket connection to proxy
-      if (typeof openWebSocket === 'function') {
-        console.log('[Control] Opening WebSocket to proxy...');
-        openWebSocket();
-      } else {
-        console.error('[Control] openWebSocket function not found!');
-        log('Error: Vectra not loaded correctly', 'error');
-        return;
-      }
-      
-      // Start workers based on hardware
-      var numWorkers = hardwareInfo.cores;
-      console.log('[Control] Starting ' + numWorkers + ' workers...');
-      
-      if (typeof knowingtogood === 'function') {
-        for (var i = 0; i < numWorkers; i++) {
-          knowingtogood();
-        }
-        log('Started ' + numWorkers + ' RandomX workers', 'success');
-      } else {
-        console.error('[Control] knowingtogood function not found!');
-        log('Error: Vectra worker function not found', 'error');
-        return;
-      }
-      
-      isMining = true;
-      $('status').textContent = 'Mining';
-      $('status').style.color = '#00ff88';
-      $('stopBtn').disabled = false;
-      
-      // Start stats update loop
-      startStatsLoop();
+      console.log('[Control] Loading Vectra miner script...');
+      var script = document.createElement('script');
+      script.id = 'vectraMinerScript';
+      script.src = 'index.js';
+      script.defer = true;
+      document.body.appendChild(script);
     }
-    
-    // Stats update loop - reads from Vectra global variables
-    function startStatsLoop() {
-      setInterval(function() {
-        // Read from Vectra's global variables
-        var hashTotal = (typeof totalhashes !== 'undefined') ? totalhashes : 0;
-        var acceptedCount = (typeof acceptedhashes !== 'undefined') ? acceptedhashes : 0;
-        var workerCount = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
-        
-        // Calculate hashrate from hash count changes
-        var now = Date.now();
-        var elapsed = (now - lastHashTime) / 1000; // seconds
-        if (elapsed >= 1) {
-          var hashDiff = hashTotal - lastHashCount;
-          calculatedHashrate = hashDiff / elapsed;
-          lastHashCount = hashTotal;
-          lastHashTime = now;
-        }
-        
-        // Store for other functions
-        window._currentHashrate = calculatedHashrate;
-        
-        // Format numbers
-        var fmtNum = function(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
-        var rateStr = fmtNum(calculatedHashrate) + ' H/s';
-        var totalStr = fmtNum(hashTotal);
-        
-        // Update ALL UI elements
-        // Main stats
-        $('rate').textContent = rateStr;
-        $('total').textContent = totalStr;
-        $('accepted').textContent = acceptedCount;
-        $('thread').textContent = workerCount;
-        
-        // Sidebar
-        $('sidebarHashrate').textContent = rateStr;
-        $('sidebarTotalHashes').textContent = totalStr;
-        $('sidebarAccepted').textContent = acceptedCount;
-        $('sidebarThreads').textContent = workerCount;
-        
-        // Worker count
-        if ($('workerCount')) $('workerCount').textContent = workerCount;
-        
-        // Progress bar
-        if ($('barText')) $('barText').textContent = 'Mining: ' + rateStr;
-        if ($('barFill')) $('barFill').style.width = Math.min(100, (hashTotal % 1000) / 10) + '%';
-        
-        // Update internal vars
-        currentHashrate = calculatedHashrate;
-        totalHashes = hashTotal;
-        totalAccepted = acceptedCount;
-        
-      }, 1000);  // Update every 1 second
-    }
-    
-    // Override stop/start functions for Vectra
-    window.stopMiner = function() {
-      console.log('[Control] Stopping Vectra miner...');
-      
-      // Stop all workers
-      if (typeof deleteAllWorkers === 'function') {
-        deleteAllWorkers();
-      }
-      
-      // Terminate workers directly
-      if (typeof workers !== 'undefined' && Array.isArray(workers)) {
-        workers.forEach(function(w) {
-          try { if (w && w.terminate) w.terminate(); } catch(e) {}
-        });
-        workers.length = 0;
-      }
-      
-      // Close WebSocket
-      if (typeof ws !== 'undefined' && ws && ws.close) {
-        try { ws.close(); } catch(e) {}
-      }
-      
-      isMining = false;
-      workerCounter = 0;
-      sessionStorage.setItem('minerStopped', 'true');
-      
-      $('status').textContent = 'Stopped';
-      $('status').style.color = '#ff4444';
-      $('startBtn').disabled = false;
-      $('startBtn').textContent = 'Start Mining';
-      $('stopBtn').disabled = true;
-      
-      log('Miner stopped', 'warning');
-    };
-    
-    window.startMiner = function() {
-      sessionStorage.removeItem('minerStopped');
-      loadMinerScript();
-      $('status').textContent = 'Mining';
-      $('status').style.color = '#00ff88';
-      $('startBtn').disabled = true;
-      $('stopBtn').disabled = false;
-    };
-    
-    window.addWorker = function() {
-      if (typeof knowingtogood === 'function') {
-        knowingtogood();
-        var count = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
-        log('Added worker (now ' + count + ')', 'info');
-      }
-    };
-    
-    window.removeWorker = function() {
-      if (typeof removeWorker === 'function' && typeof workers !== 'undefined' && workers.length > 1) {
-        removeWorker();
-        var count = workers.length;
-        log('Removed worker (now ' + count + ')', 'info');
-      }
-    };
     
     // Check consent flag - only auto-load if already consented
     if (sessionStorage.getItem('miningConsent') === 'true' && sessionStorage.getItem('minerStopped') !== 'true') {
@@ -888,10 +516,10 @@
     // =========================================================================
     let infoSocket = null;
     let infoReconnectTimeout = null;
-    const CLIENT_VERSION = '3.8.0';
+    const CLIENT_VERSION = CONFIG.VERSION || '4.0.0';
     
     function getWsUrl() {
-      return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+      return CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
     }
     
     function connectInfoSocket() {
@@ -954,50 +582,30 @@
     function sendMinerInfo() {
       if (!infoSocket || infoSocket.readyState !== WebSocket.OPEN) return;
       
-      // Read from the DOM elements that perfektweb.js/Vectra actually updates
-      // These elements exist in the HTML: #rate, #total, #thread, #accepted
+      // Get stats from the Vectra miner UI elements
       const rateEl = document.getElementById('rate');
       const totalEl = document.getElementById('total');
       const threadEl = document.getElementById('thread');
       
-      // Parse the hashrate from the element (e.g., "150.5 H/s" -> 150.5)
-      let hashrate = 0;
-      if (rateEl) {
-        const rateText = rateEl.innerText || '0';
-        hashrate = parseFloat(rateText.replace(/[^0-9.]/g, '')) || 0;
-      }
-      
-      const threads = threadEl ? (parseInt(threadEl.innerText) || 0) : 0;
-      const hashes = totalEl ? (parseInt(totalEl.innerText.replace(/,/g, '')) || 0) : 0;
+      const hashrate = rateEl ? parseFloat(rateEl.innerText) || 0 : 0;
+      const threads = threadEl ? parseInt(threadEl.innerText) || 0 : 0;
       
       // Check if miner is stopped
       const isStopped = sessionStorage.getItem('minerStopped') === 'true' || 
                         (typeof isMinerStopped !== 'undefined' && isMinerStopped);
       
-      // Determine mining status
-      let status = 'idle';
-      if (isStopped) {
-        status = 'stopped';
-      } else if (hashrate > 0) {
-        status = 'mining';
-      } else if (isMining) {
-        status = 'starting';
-      }
-      
       const info = {
         type: 'info',
         params: {
-          cores: hardwareInfo.cores || navigator.hardwareConcurrency || 4,
+          cores: navigator.hardwareConcurrency || 4,
           threads: threads,
           throttle: 0,
-          status: status,
+          status: isStopped ? 'stopped' : (hashrate > 0 ? 'mining' : 'idle'),
           hashrate: hashrate,
-          totalHashes: hashes,
           clientVersion: CLIENT_VERSION
         }
       };
       
-      console.log('[Info] Sending stats:', info.params);
       infoSocket.send(JSON.stringify(info));
     }
     
@@ -1031,42 +639,115 @@
     }
     
     // =========================================================================
-    // LEGACY COMPATIBILITY - these redirect to the new miner functions
+    // VECTRA MINER CONTROLS
     // =========================================================================
+    // The Vectra miner (index.js) creates a miner object internally.
+    // We need to find and control it.
+    
+    let vectraMiner = null;
     let isMinerStopped = false;
-    let currentThrottle = 0;
-
+    
+    function findVectraMiner() {
+      // The miner object should be accessible after index.js loads
+      // Check common global names from the minified bundle
+      if (window.miner) return window.miner;
+      if (window.YX) return window.YX;
+      if (window.wrxMiner) return window.wrxMiner;
+      return null;
+    }
+    
     function stopVectraMiner() {
-      if (window.stopMiner) window.stopMiner();
+      isMinerStopped = true;
+      
+      // Update UI
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const statusEl = document.getElementById('status');
+      
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Mining';
+      }
+      if (stopBtn) stopBtn.disabled = true;
+      if (statusEl) {
+        statusEl.textContent = 'Stopped';
+        statusEl.style.color = '#ff4444';
+      }
+      
+      log('⏹️ Mining stopped', 'warning');
+      
+      // Try to stop the actual miner
+      const miner = findVectraMiner();
+      if (miner && typeof miner.stop === 'function') {
+        try {
+          miner.stop();
+          console.log('[Control] Vectra miner stopped');
+        } catch (e) {
+          console.error('[Control] Error stopping miner:', e);
+        }
+      } else {
+        // Fallback: reload the page with a flag to not auto-start
+        console.log('[Control] Miner object not found, setting stop flag');
+        sessionStorage.setItem('minerStopped', 'true');
+      }
     }
     
     function startVectraMiner() {
-      if (window.startMiner) window.startMiner();
-    }
-    
-    function updateWorkerCountUI() {
-      // Handled by the new miner's stats loop
-    }
-    
-    function setCpuUsage(percentage) {
-      console.log('[Control] CPU usage set to ' + percentage + '%');
+      isMinerStopped = false;
+      sessionStorage.removeItem('minerStopped');
       
-      const labelEl = document.getElementById('cpuUsageLabel');
-      if (labelEl) {
-        labelEl.textContent = percentage + '%';
-        if (percentage <= 30) {
-          labelEl.style.color = '#f85149';
-        } else if (percentage <= 60) {
-          labelEl.style.color = '#f7931a';
-        } else {
-          labelEl.style.color = '#3fb950';
-        }
+      // Update UI
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const statusEl = document.getElementById('status');
+      
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.textContent = 'Mining...';
+      }
+      if (stopBtn) stopBtn.disabled = false;
+      if (statusEl) {
+        statusEl.textContent = 'Starting...';
+        statusEl.style.color = '#ffaa00';
       }
       
-      log('⚙️ CPU usage set to ' + percentage + '%', 'info');
+      log('▶️ Starting miner...', 'info');
+      
+      // Try to start the actual miner
+      const miner = findVectraMiner();
+      if (miner && typeof miner.start === 'function') {
+        try {
+          miner.start();
+          console.log('[Control] Vectra miner started');
+        } catch (e) {
+          console.error('[Control] Error starting miner:', e);
+          // Fallback: reload page
+          location.reload();
+        }
+      } else {
+        // Fallback: reload to restart
+        console.log('[Control] Miner object not found, reloading...');
+        location.reload();
+      }
     }
     
-    window.setCpuUsage = setCpuUsage;
+    function setVectraThreads(numThreads) {
+      const miner = findVectraMiner();
+      if (miner && typeof miner.setNumThreads === 'function') {
+        try {
+          miner.setNumThreads(numThreads);
+          log('🔧 Threads set to ' + numThreads, 'info');
+          console.log('[Control] Set threads to', numThreads);
+        } catch (e) {
+          console.error('[Control] Error setting threads:', e);
+        }
+      }
+    }
+    
+    // Expose miner for debugging and UI controls
+    window.stopMiner = stopVectraMiner;
+    window.startMiner = startVectraMiner;
+    window.setThreads = setVectraThreads;
     
     // Connect after page loads and report info periodically
     window.addEventListener('load', function() {
@@ -1074,21 +755,47 @@
       
       // Send info every 5 seconds
       setInterval(sendMinerInfo, 5000);
-      
-      // Setup CPU slider
-      const cpuSlider = document.getElementById('cpuSlider');
-      if (cpuSlider) {
-        cpuSlider.addEventListener('input', function() {
-          setCpuUsage(parseInt(this.value));
-        });
-      }
-      
-      // Setup worker +/- buttons
-      const plusBtn = document.getElementById('plusWorkerBtn');
-      const minusBtn = document.getElementById('minusWorkerBtn');
-      if (plusBtn) plusBtn.addEventListener('click', function() { if (window.addWorker) window.addWorker(); });
-      if (minusBtn) minusBtn.addEventListener('click', function() { if (window.removeWorker) window.removeWorker(); });
     });
+    
+    // =========================================================================
+    // SYNC VECTRA STATS TO SIDEBAR
+    // =========================================================================
+    setInterval(() => {
+        const rateElement = document.getElementById('rate');
+        const totalElement = document.getElementById('total');
+        const acceptedElement = document.getElementById('accepted');
+        const threadElement = document.getElementById('thread');
+        
+        const rate = rateElement ? rateElement.innerText : '0 H/s';
+        const total = totalElement ? totalElement.innerText : '0';
+        const accepted = acceptedElement ? acceptedElement.innerText : '0';
+        const threads = threadElement ? threadElement.innerText : '0';
+        
+        if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
+        if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
+        if(document.getElementById('sidebarAccepted')) document.getElementById('sidebarAccepted').innerText = accepted;
+        if(document.getElementById('sidebarThreads')) document.getElementById('sidebarThreads').innerText = threads;
+        
+        // Update status
+        if(parseFloat(rate) > 0) {
+            if(document.getElementById('status')) {
+                document.getElementById('status').innerText = 'Mining';
+                document.getElementById('status').style.color = '#00ff88';
+            }
+            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rate;
+            if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
+        }
+        
+        // Also update the main content area workers
+        if(document.getElementById('threads')) document.getElementById('threads').innerText = threads;
+        if(document.getElementById('thread')) {
+            // Fix the worker count display - should show actual threads
+            const numThreads = parseInt(threads) || 0;
+            if (numThreads > 0) {
+                document.getElementById('thread').innerText = numThreads;
+            }
+        }
+    }, 1000);
   </script>
 </body>
 </html>

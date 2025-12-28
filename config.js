@@ -1,6 +1,7 @@
 // ============================================================================
 // MINER CONFIGURATION - Edit these values for your setup
 // ============================================================================
+// All scripts will read from this central config file
 
 const CONFIG = {
   // Your Monero wallet address
@@ -15,6 +16,12 @@ const CONFIG = {
   // For local: ws://localhost:8892/proxy
   PROXY_URL: 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy',
   
-  // Pool settings (configured on server side)
-  POOL: 'gulf.moneroocean.stream:10128'
+  // Pool settings
+  POOL: 'gulf.moneroocean.stream:10128',
+  
+  // Mining algorithm
+  ALGORITHM: 'rx/0',
+  
+  // Version info
+  VERSION: '4.0.0'
 };

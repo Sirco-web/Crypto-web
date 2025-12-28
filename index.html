@@ -325,9 +325,23 @@
             log('✓ Authenticated with pool', 'success');
             $('status').textContent = 'Mining';
             $('status').style.color = '#00ff88';
+            handshake = true;
             break;
           case 'job':
-            log('⛏️ New job received (id: ' + (e.job_id || e.params?.job_id || 'unknown') + ')', 'info');
+            var jobId = e.job_id || (e.params ? e.params.job_id : null) || 'unknown';
+            log('⛏️ New job received (id: ' + jobId + ')', 'info');
+            // Store the job globally for workers
+            job = e.params || e;
+            console.log('[DEBUG on_servermsg] Job stored:', JSON.stringify(job));
+            // Pass job to all workers
+            if (typeof workers !== 'undefined' && workers && workers.length) {
+              for (var i = 0; i < workers.length; i++) {
+                if (workers[i] && workers[i].postMessage) {
+                  workers[i].postMessage({ type: 'job', job: job });
+                }
+              }
+              console.log('[DEBUG on_servermsg] Job sent to ' + workers.length + ' workers');
+            }
             break;
           case 'accepted':
             totalAccepted++;
@@ -368,6 +382,24 @@
       if (data.type === 'found') {
         console.log('[DEBUG] 💎 SHARE FOUND! Worker #' + workerId + ', data:', JSON.stringify(data));
         log('💎 Share found by worker #' + workerId, 'success');
+        
+        // CRITICAL: Submit the share to the proxy/pool via WebSocket!
+        if (typeof ws !== 'undefined' && ws && ws.readyState === WebSocket.OPEN) {
+          var submitMsg = JSON.stringify({
+            type: 'submit',
+            params: {
+              job_id: data.job_id,
+              nonce: data.nonce,
+              result: data.result
+            }
+          });
+          ws.send(submitMsg);
+          console.log('[DEBUG] Share submitted:', submitMsg);
+          log('📤 Share submitted to pool', 'info');
+        } else {
+          console.error('[DEBUG] Cannot submit share - WebSocket not connected!');
+          log('⚠️ Cannot submit share - no connection', 'warning');
+        }
       }
       
       if (data.type === 'accepted') {
@@ -417,6 +449,52 @@
         console.log('[DEBUG] openWebSocket function not found, trying direct WebSocket creation');
         log('Warning: openWebSocket not found', 'warning');
       }
+      
+      // Check if WebSocket was created, if not create our own
+      setTimeout(function() {
+        if (typeof ws === 'undefined' || ws === null) {
+          console.log('[DEBUG] ws is null/undefined, creating fallback WebSocket...');
+          try {
+            ws = new WebSocket(rightProxy);
+            ws.onopen = function() {
+              console.log('[DEBUG] Fallback WebSocket connected!');
+              connected = true;
+              // Send authentication
+              var authMsg = JSON.stringify({
+                type: 'auth',
+                params: {
+                  site_key: CONFIG.WALLET,
+                  user: CONFIG.WORKER_NAME,
+                  algo: rightalgo,
+                  pool: rightPool
+                }
+              });
+              ws.send(authMsg);
+              console.log('[DEBUG] Auth sent:', authMsg);
+            };
+            ws.onmessage = function(evt) {
+              console.log('[DEBUG] WebSocket message:', evt.data);
+              var msg = JSON.parse(evt.data);
+              if (typeof on_servermsg === 'function') {
+                on_servermsg(msg);
+              }
+            };
+            ws.onerror = function(err) {
+              console.error('[DEBUG] WebSocket error:', err);
+              connected = false;
+            };
+            ws.onclose = function() {
+              console.log('[DEBUG] WebSocket closed');
+              connected = false;
+            };
+            log('Fallback WebSocket created', 'info');
+          } catch (e) {
+            console.error('[DEBUG] Failed to create fallback WebSocket:', e);
+          }
+        } else {
+          console.log('[DEBUG] ws exists, WebSocket should be active');
+        }
+      }, 1000);
       
       // Call knowingtogood from perfektweb.js to start workers
       if (typeof knowingtogood === 'function') {

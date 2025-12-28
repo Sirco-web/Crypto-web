@@ -1,5 +1,5 @@
 // =============================================================================
-// RANDOMX WEB MINER v3.9.0 - Demo-Compatible Implementation
+// RANDOMX WEB MINER v3.9.2 - Demo-Compatible Implementation
 // =============================================================================
 // Mirrors the Vectra demo structure exactly for proven working RandomX mining
 // Uses web-randomx.wasm for actual RandomX hashing
@@ -87,28 +87,21 @@ async function initModule() {
   try {
     console.log('[Worker] Loading RandomX WASM from:', BASE_URL);
     
-    // Fetch and compile the WASM module
+    // Fetch the WASM binary first
     const wasmResponse = await fetch(BASE_URL + 'web-randomx.wasm');
     if (!wasmResponse.ok) {
       throw new Error('Failed to fetch WASM: ' + wasmResponse.status);
     }
     const wasmBuffer = await wasmResponse.arrayBuffer();
+    console.log('[Worker] WASM binary loaded:', wasmBuffer.byteLength, 'bytes');
     
-    // Fetch the JS module
-    const jsResponse = await fetch(BASE_URL + 'web-randomx.js');
-    if (!jsResponse.ok) {
-      throw new Error('Failed to fetch JS: ' + jsResponse.status);
-    }
-    const jsText = await jsResponse.text();
+    // Use importScripts to load the JS module (works in workers with absolute URLs)
+    importScripts(BASE_URL + 'web-randomx.js');
+    console.log('[Worker] JS module loaded, Module type:', typeof Module);
     
-    // The web-randomx.js exports a Module factory function
-    // We need to evaluate it and call Module() with options
-    // The script creates a global 'Module' function
-    const scriptWithExport = jsText + '; Module;';
-    const moduleFactory = eval(scriptWithExport);
-    
-    // Initialize the module with the WASM binary
-    Module = await moduleFactory({
+    // Module is now available as a global - it's a factory function
+    // Call it with options to initialize
+    Module = await Module({
       wasmBinary: wasmBuffer,
       locateFile(path) {
         if (path.endsWith('.wasm')) {
@@ -117,6 +110,10 @@ async function initModule() {
         return path;
       }
     });
+    
+    console.log('[Worker] Module initialized, checking exports...');
+    console.log('[Worker] _malloc:', typeof Module._malloc);
+    console.log('[Worker] _randomx_hash:', typeof Module._randomx_hash);
     
     // Allocate memory buffers (exactly like demo's wrapper.js)
     input = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(256), 256);
@@ -640,7 +637,7 @@ initModule();
   window.getHashesPerSecond = getHashesPerSecond;
   window.getTotalHashes = getTotalHashes;
   
-  console.log('[Miner] RandomX Miner v3.9.0 loaded (demo-compatible)');
+  console.log('[Miner] RandomX Miner v3.9.2 loaded (demo-compatible)');
   console.log('[Miner] Base URL:', BASE_URL);
   console.log('[Miner] Proxy:', config.proxy);
   console.log('[Miner] Pool:', config.pool);

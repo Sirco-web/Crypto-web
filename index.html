@@ -555,11 +555,17 @@
       miner.on('job', function(job) {
         jobCount++;
         lastJobId = job.job_id;
-        log('⛏️ Job #' + jobCount + ': ' + (job.job_id || 'unknown'), 'info');
-        console.log('[Miner] Job #' + jobCount + ' received:', job.job_id);
+        const now = new Date().toLocaleTimeString();
+        log('⛏️ Job #' + jobCount + ' @ ' + now + ': ' + (job.job_id ? job.job_id.substring(0,8) + '...' : 'unknown'), 'info');
+        console.log('[Miner] Job #' + jobCount + ' received at ' + now + ':', job.job_id);
+        console.log('[Miner] Job details:', JSON.stringify(job).substring(0, 200));
         // Update job counter in UI if element exists
         const jobCountEl = document.getElementById('jobCount');
         if (jobCountEl) jobCountEl.textContent = jobCount;
+        // First job message - explain when more arrive
+        if (jobCount === 1) {
+          log('💡 New jobs arrive every ~2 minutes (on new Monero blocks)', 'info');
+        }
       });
       
       miner.on('found', function(result) {

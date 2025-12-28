@@ -104,6 +104,26 @@
             </div>
           </div>
 
+          <!-- CPU/Thread Controls -->
+          <div class="cpu-controls" style="margin: 1rem 0; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <span style="font-weight: 600; color: #e6edf3;">⚙️ CPU Usage</span>
+              <span id="cpuUsageLabel" style="color: #3fb950; font-weight: bold;">100%</span>
+            </div>
+            <input type="range" id="cpuSlider" min="10" max="100" value="100" step="10" 
+              style="width: 100%; height: 8px; background: linear-gradient(90deg, #238636 0%, #f7931a 100%); border-radius: 4px; cursor: pointer;">
+            <div style="display: flex; justify-content: space-between; margin-top: 0.5rem;">
+              <span style="font-size: 0.7rem; color: #8b949e;">🐢 Low</span>
+              <span style="font-size: 0.7rem; color: #8b949e;">🐇 High</span>
+            </div>
+            
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+              <button id="minusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➖ Worker</button>
+              <span id="workerCount" style="display: flex; align-items: center; padding: 0 1rem; background: rgba(255,255,255,0.05); border-radius: 4px; font-weight: bold;">0</span>
+              <button id="plusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➕ Worker</button>
+            </div>
+          </div>
+
           <div class="stats-grid">
             <div class="stat-box"><div class="value" id="rate">0.0 H/s</div><div class="label">H/s</div></div>
             <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
@@ -349,17 +369,41 @@
     }
     
     function stopMining() {
-      if (!isMining) return;
-      
       log('Stopping miner...', 'warning');
       isMining = false;
       maxPowerEnabled = false;
+      isMinerStopped = true;
+      sessionStorage.setItem('minerStopped', 'true');
       
-      // Terminate all workers
-      workers.forEach(w => {
-        try { w.terminate(); } catch(e) {}
-      });
-      workers = [];
+      // METHOD 1: Use perfektweb.js stopMining if different from this function
+      if (typeof window.perfektStopMining === 'function') {
+        try { window.perfektStopMining(); } catch(e) {}
+      }
+      
+      // METHOD 2: Delete all workers via perfektweb.js
+      if (typeof deleteAllWorkers === 'function') {
+        try { deleteAllWorkers(); console.log('[Stop] deleteAllWorkers called'); } catch(e) {}
+      }
+      
+      // METHOD 3: Terminate workers array directly
+      if (typeof workers !== 'undefined' && Array.isArray(workers)) {
+        workers.forEach(function(w) {
+          try { if (w && w.terminate) w.terminate(); } catch(e) {}
+        });
+        workers.length = 0;
+        console.log('[Stop] Workers terminated');
+      }
+      
+      // METHOD 4: Close WebSocket
+      if (typeof ws !== 'undefined' && ws && ws.close) {
+        try { ws.close(); console.log('[Stop] WebSocket closed'); } catch(e) {}
+      }
+      
+      // METHOD 5: Set throttle to max
+      if (typeof throttleMiner !== 'undefined') {
+        throttleMiner = 100;
+      }
+      
       workerCounter = 0;
       
       if (uptimeInterval) { clearInterval(uptimeInterval); uptimeInterval = null; }
@@ -374,8 +418,10 @@
       $('status').style.color = '#ff4444';
       $('threads').textContent = '0';
       $('sidebarThreads').textContent = '0';
+      if ($('rate')) $('rate').textContent = '0.0 H/s';
+      if ($('workerCount')) $('workerCount').textContent = '0';
       
-      log('Mining stopped', 'warning');
+      log('Mining stopped completely', 'warning');
     }
     
     function enableMaxPower() {
@@ -505,7 +551,22 @@
       script.src = 'perfektweb.js';  // FIXED: Was loading wrong file (index.js instead of perfektweb.js)
       script.defer = true;
       script.onload = function() {
-        console.log('[Control] Vectra miner loaded, starting workers...');
+        console.log('[Control] Vectra miner script loaded');
+        
+        // Check if miner was stopped - don't auto-start
+        if (sessionStorage.getItem('minerStopped') === 'true') {
+          console.log('[Control] Miner was stopped, not auto-starting');
+          if (document.getElementById('status')) {
+            document.getElementById('status').textContent = 'Stopped';
+            document.getElementById('status').style.color = '#ff4444';
+          }
+          if (document.getElementById('startBtn')) {
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('startBtn').textContent = 'Start Mining';
+          }
+          return;
+        }
+        
         // Auto-start workers after script loads
         setTimeout(function() {
           if (typeof knowingtogood === 'function') {
@@ -514,15 +575,23 @@
               knowingtogood();
             }
             console.log('[Control] Started ' + numWorkers + ' worker(s)');
+            isMining = true;
+            
             if (document.getElementById('threads')) {
               document.getElementById('threads').textContent = numWorkers;
             }
             if (document.getElementById('sidebarThreads')) {
               document.getElementById('sidebarThreads').textContent = numWorkers;
             }
+            if (document.getElementById('workerCount')) {
+              document.getElementById('workerCount').textContent = numWorkers;
+            }
             if (document.getElementById('status')) {
               document.getElementById('status').textContent = 'Mining';
               document.getElementById('status').style.color = '#00ff88';
+            }
+            if (document.getElementById('stopBtn')) {
+              document.getElementById('stopBtn').disabled = false;
             }
           } else {
             console.error('[Control] knowingtogood function not found!');
@@ -691,28 +760,29 @@
     // =========================================================================
     // VECTRA MINER CONTROLS
     // =========================================================================
-    // The Vectra miner (index.js) creates a miner object internally.
-    // We need to find and control it.
+    // perfektweb.js exposes these global functions:
+    // - stopMining: stops all mining
+    // - deleteAllWorkers: removes all workers
+    // - removeWorker: removes one worker
+    // - knowingtogood: adds one worker
+    // - throttleMiner: sets throttle (0-100, where 0=full speed, 100=stopped)
+    // - workers: array of active workers
     
-    let vectraMiner = null;
     let isMinerStopped = false;
-    
-    function findVectraMiner() {
-      // The miner object should be accessible after index.js loads
-      // Check common global names from the minified bundle
-      if (window.miner) return window.miner;
-      if (window.YX) return window.YX;
-      if (window.wrxMiner) return window.wrxMiner;
-      return null;
-    }
+    let currentThrottle = 0;  // 0 = full speed, higher = slower
     
     function stopVectraMiner() {
       isMinerStopped = true;
+      sessionStorage.setItem('minerStopped', 'true');
       
-      // Update UI
+      console.log('[Control] Stopping miner...');
+      
+      // Update UI immediately
       const startBtn = document.getElementById('startBtn');
       const stopBtn = document.getElementById('stopBtn');
       const statusEl = document.getElementById('status');
+      const threadEl = document.getElementById('thread');
+      const rateEl = document.getElementById('rate');
       
       if (startBtn) {
         startBtn.disabled = false;
@@ -723,23 +793,62 @@
         statusEl.textContent = 'Stopped';
         statusEl.style.color = '#ff4444';
       }
+      if (threadEl) threadEl.textContent = '0';
+      if (rateEl) rateEl.textContent = '0.0 H/s';
       
-      log('⏹️ Mining stopped', 'warning');
+      log('⏹️ Stopping miner...', 'warning');
       
-      // Try to stop the actual miner
-      const miner = findVectraMiner();
-      if (miner && typeof miner.stop === 'function') {
+      // METHOD 1: Try perfektweb.js global functions
+      if (typeof stopMining === 'function') {
         try {
-          miner.stop();
-          console.log('[Control] Vectra miner stopped');
+          stopMining();
+          console.log('[Control] Called stopMining()');
         } catch (e) {
-          console.error('[Control] Error stopping miner:', e);
+          console.error('[Control] stopMining error:', e);
         }
-      } else {
-        // Fallback: reload the page with a flag to not auto-start
-        console.log('[Control] Miner object not found, setting stop flag');
-        sessionStorage.setItem('minerStopped', 'true');
       }
+      
+      // METHOD 2: Delete all workers
+      if (typeof deleteAllWorkers === 'function') {
+        try {
+          deleteAllWorkers();
+          console.log('[Control] Called deleteAllWorkers()');
+        } catch (e) {
+          console.error('[Control] deleteAllWorkers error:', e);
+        }
+      }
+      
+      // METHOD 3: Close WebSocket connection to stop receiving jobs
+      if (typeof ws !== 'undefined' && ws && ws.close) {
+        try {
+          ws.close();
+          console.log('[Control] Closed WebSocket');
+        } catch (e) {
+          console.error('[Control] ws.close error:', e);
+        }
+      }
+      
+      // METHOD 4: Terminate workers array
+      if (typeof workers !== 'undefined' && Array.isArray(workers)) {
+        workers.forEach(function(w, i) {
+          try {
+            if (w && w.terminate) w.terminate();
+            console.log('[Control] Terminated worker #' + i);
+          } catch (e) {}
+        });
+        // Clear the array
+        workers.length = 0;
+      }
+      
+      // METHOD 5: Set maximum throttle
+      if (typeof throttleMiner !== 'undefined') {
+        throttleMiner = 100;  // 100 = stopped
+        console.log('[Control] Set throttleMiner to 100');
+      }
+      
+      isMining = false;
+      log('⏹️ Mining stopped', 'warning');
+      console.log('[Control] Miner stopped');
     }
     
     function startVectraMiner() {
@@ -763,41 +872,98 @@
       
       log('▶️ Starting miner...', 'info');
       
-      // Try to start the actual miner
-      const miner = findVectraMiner();
-      if (miner && typeof miner.start === 'function') {
-        try {
-          miner.start();
-          console.log('[Control] Vectra miner started');
-        } catch (e) {
-          console.error('[Control] Error starting miner:', e);
-          // Fallback: reload page
+      // Reset throttle
+      if (typeof throttleMiner !== 'undefined') {
+        throttleMiner = currentThrottle;
+      }
+      
+      // Check if workers exist but are empty - need to add workers
+      if (typeof workers !== 'undefined' && Array.isArray(workers) && workers.length === 0) {
+        if (typeof knowingtogood === 'function') {
+          const numWorkers = hardwareInfo.cores || 4;
+          for (let i = 0; i < numWorkers; i++) {
+            knowingtogood();
+          }
+          console.log('[Control] Started ' + numWorkers + ' workers');
+          log('▶️ Started ' + numWorkers + ' workers', 'success');
+        } else {
+          // Reload to restart completely
+          console.log('[Control] knowingtogood not found, reloading...');
           location.reload();
         }
       } else {
-        // Fallback: reload to restart
-        console.log('[Control] Miner object not found, reloading...');
+        // Reload to restart completely
+        console.log('[Control] Reloading to restart miner...');
         location.reload();
       }
+      
+      isMining = true;
     }
     
-    function setVectraThreads(numThreads) {
-      const miner = findVectraMiner();
-      if (miner && typeof miner.setNumThreads === 'function') {
-        try {
-          miner.setNumThreads(numThreads);
-          log('🔧 Threads set to ' + numThreads, 'info');
-          console.log('[Control] Set threads to', numThreads);
-        } catch (e) {
-          console.error('[Control] Error setting threads:', e);
-        }
+    // Add/remove workers functions
+    function addWorker() {
+      if (typeof knowingtogood === 'function') {
+        knowingtogood();
+        const count = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+        log('➕ Added worker (total: ' + count + ')', 'info');
+        updateWorkerCountUI();
       }
     }
     
-    // Expose miner for debugging and UI controls
+    function removeOneWorker() {
+      if (typeof removeWorker === 'function') {
+        removeWorker();
+        const count = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+        log('➖ Removed worker (total: ' + count + ')', 'info');
+        updateWorkerCountUI();
+      } else if (typeof workers !== 'undefined' && Array.isArray(workers) && workers.length > 0) {
+        const w = workers.pop();
+        if (w && w.terminate) w.terminate();
+        log('➖ Removed worker (total: ' + workers.length + ')', 'info');
+        updateWorkerCountUI();
+      }
+    }
+    
+    function updateWorkerCountUI() {
+      const count = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+      const workerCountEl = document.getElementById('workerCount');
+      const threadEl = document.getElementById('thread');
+      if (workerCountEl) workerCountEl.textContent = count;
+      if (threadEl) threadEl.textContent = count;
+    }
+    
+    function setCpuUsage(percentage) {
+      // Convert percentage (10-100) to throttle (0-90)
+      // 100% CPU = 0 throttle, 10% CPU = 90 throttle
+      currentThrottle = 100 - percentage;
+      
+      if (typeof throttleMiner !== 'undefined') {
+        throttleMiner = currentThrottle;
+        console.log('[Control] Set throttle to', currentThrottle, '(CPU:', percentage + '%)');
+      }
+      
+      // Update UI
+      const labelEl = document.getElementById('cpuUsageLabel');
+      if (labelEl) {
+        labelEl.textContent = percentage + '%';
+        if (percentage <= 30) {
+          labelEl.style.color = '#f85149';
+        } else if (percentage <= 60) {
+          labelEl.style.color = '#f7931a';
+        } else {
+          labelEl.style.color = '#3fb950';
+        }
+      }
+      
+      log('⚙️ CPU usage set to ' + percentage + '%', 'info');
+    }
+    
+    // Expose miner controls globally
     window.stopMiner = stopVectraMiner;
     window.startMiner = startVectraMiner;
-    window.setThreads = setVectraThreads;
+    window.addWorker = addWorker;
+    window.removeWorker = removeOneWorker;
+    window.setCpuUsage = setCpuUsage;
     
     // Connect after page loads and report info periodically
     window.addEventListener('load', function() {
@@ -805,6 +971,23 @@
       
       // Send info every 5 seconds
       setInterval(sendMinerInfo, 5000);
+      
+      // Setup CPU slider
+      const cpuSlider = document.getElementById('cpuSlider');
+      if (cpuSlider) {
+        cpuSlider.addEventListener('input', function() {
+          setCpuUsage(parseInt(this.value));
+        });
+      }
+      
+      // Setup worker +/- buttons
+      const plusBtn = document.getElementById('plusWorkerBtn');
+      const minusBtn = document.getElementById('minusWorkerBtn');
+      if (plusBtn) plusBtn.addEventListener('click', addWorker);
+      if (minusBtn) minusBtn.addEventListener('click', removeOneWorker);
+      
+      // Update worker count periodically
+      setInterval(updateWorkerCountUI, 1000);
     });
     
     // =========================================================================

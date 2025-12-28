@@ -62,6 +62,71 @@ This document explains all fixes applied to the XMR Web Miner, how the system wo
 
 ## 🔴 Critical Fixes Applied
 
+### Fix #2: Worker Message Format & WASM Initialization (December 28, 2025)
+
+**Errors**: 
+```
+Uncaught TypeError: Cannot read properties of undefined (reading 'length')
+    at hexToBytes (worker:72:19)
+    at setJob (worker:106:10)
+
+[Worker] WASM init failed: TypeError: moduleFunc is not a function
+
+Uncaught TypeError: Cannot set properties of null (setting '39')
+    at hash (worker:141:13)
+```
+
+**Root Causes**:
+1. **Message format mismatch**: Workers receive jobs from two sources with different formats:
+   - `randomx-miner.js` sends job directly: `{ job_id, blob, target, seed_hash, ... }`
+   - `index.html` sends wrapped job: `{ type: 'job', job: { job_id, blob, ... } }`
+   
+2. **WASM module initialization**: The `web-randomx.js` exports a factory function that needs proper handling
+   
+3. **Missing validation**: `hexToBytes()` and other functions didn't validate inputs before using them
+
+**The Fix (v3.9.3)**:
+
+```javascript
+// 1. Handle wrapped job messages in worker onmessage:
+if (data && data.type === 'job' && data.job) {
+  data = data.job;  // Unwrap the job
+}
+
+// 2. Validate hexToBytes input:
+function hexToBytes(hex) {
+  if (!hex || typeof hex !== 'string') {
+    console.error('[Worker] hexToBytes: invalid input:', hex);
+    return new Uint8Array(0);
+  }
+  // ... rest of function
+}
+
+// 3. Validate setJob() has required fields:
+function setJob(data) {
+  if (!data || !data.blob || !data.job_id) {
+    console.error('[Worker] setJob: missing required fields');
+    return false;
+  }
+  if (!input) {
+    console.error('[Worker] setJob: WASM not initialized');
+    return false;
+  }
+  // ... rest of function
+}
+
+// 4. Proper WASM factory initialization:
+const moduleFactory = Module;  // Save reference
+Module = await moduleFactory({
+  wasmBinary: wasmBuffer,
+  locateFile(path) { return BASE_URL + path; }
+});
+```
+
+**Files Changed**: `randomx-miner.js`
+
+---
+
 ### Fix #1: Missing `seed_hash` in Job Broadcast (December 27, 2025)
 
 **Error**: 

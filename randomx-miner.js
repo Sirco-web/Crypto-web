@@ -1,5 +1,5 @@
 // =============================================================================
-// RANDOMX WEB MINER v3.9.2 - Demo-Compatible Implementation
+// RANDOMX WEB MINER v3.9.3 - Demo-Compatible Implementation
 // =============================================================================
 // Mirrors the Vectra demo structure exactly for proven working RandomX mining
 // Uses web-randomx.wasm for actual RandomX hashing
@@ -99,21 +99,37 @@ async function initModule() {
     importScripts(BASE_URL + 'web-randomx.js');
     console.log('[Worker] JS module loaded, Module type:', typeof Module);
     
+    // Check if Module is a function (factory pattern from Emscripten)
+    if (typeof Module !== 'function') {
+      throw new Error('Module is not a function, got: ' + typeof Module);
+    }
+    
+    // Store reference to factory function
+    const moduleFactory = Module;
+    
     // Module is now available as a global - it's a factory function
     // Call it with options to initialize
-    Module = await Module({
+    const moduleInstance = await moduleFactory({
       wasmBinary: wasmBuffer,
       locateFile(path) {
         if (path.endsWith('.wasm')) {
           return BASE_URL + 'web-randomx.wasm';
         }
-        return path;
+        return BASE_URL + path;
       }
     });
+    
+    // Use the instance returned by the factory
+    Module = moduleInstance;
     
     console.log('[Worker] Module initialized, checking exports...');
     console.log('[Worker] _malloc:', typeof Module._malloc);
     console.log('[Worker] _randomx_hash:', typeof Module._randomx_hash);
+    console.log('[Worker] HEAPU8:', typeof Module.HEAPU8);
+    
+    if (!Module._malloc || !Module._randomx_hash || !Module.HEAPU8) {
+      throw new Error('Missing required WASM exports');
+    }
     
     // Allocate memory buffers (exactly like demo's wrapper.js)
     input = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(256), 256);
@@ -130,9 +146,12 @@ async function initModule() {
     // If we received a job while loading, start mining now
     if (pendingJob) {
       console.log('[Worker] Processing pending job...');
-      setJob(pendingJob);
-      pendingJob = null;
-      work();
+      if (setJob(pendingJob)) {
+        pendingJob = null;
+        work();
+      } else {
+        console.error('[Worker] Failed to set pending job');
+      }
     }
     
   } catch (error) {
@@ -141,8 +160,12 @@ async function initModule() {
   }
 }
 
-// Helper: hex string to bytes
+// Helper: hex string to bytes (with validation)
 function hexToBytes(hex) {
+  if (!hex || typeof hex !== 'string') {
+    console.error('[Worker] hexToBytes: invalid input:', hex);
+    return new Uint8Array(0);
+  }
   const len = hex.length / 2;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; ++i) {
@@ -176,8 +199,23 @@ function meetsTarget(output, target) {
 
 // Set job from pool (exactly like demo's wrapper.js)
 function setJob(data) {
+  // Validate required job fields
+  if (!data || !data.blob || !data.job_id) {
+    console.error('[Worker] setJob: missing required fields, got:', Object.keys(data || {}));
+    return false;
+  }
+  
+  if (!input) {
+    console.error('[Worker] setJob: input buffer not initialized (WASM not ready)');
+    return false;
+  }
+  
   currentJob = data;
   blob = hexToBytes(data.blob);
+  if (blob.length === 0) {
+    console.error('[Worker] setJob: blob conversion failed');
+    return false;
+  }
   input.set(blob);
   
   const targetBytes = hexToBytes(data.target);
@@ -197,10 +235,13 @@ function setJob(data) {
   
   if (data.seed_hash) {
     const seedBlob = hexToBytes(data.seed_hash);
-    seedInput.set(seedBlob);
+    if (seedInput && seedBlob.length > 0) {
+      seedInput.set(seedBlob);
+    }
   }
   
   console.log('[Worker] Job set:', data.job_id, 'target:', data.target);
+  return true;
 }
 
 // Get current timestamp
@@ -210,6 +251,12 @@ function now() {
 
 // Perform one hash (exactly like demo's wrapper.js)
 function hash() {
+  // Check if buffers are initialized
+  if (!input || !output || !seedInput || !Module || !Module._randomx_hash) {
+    console.error('[Worker] hash: WASM not properly initialized');
+    return 0;
+  }
+  
   // Generate random nonce
   const nonce = (4294967295 * Math.random() + 1) >>> 0;
   input[39] = (4278190080 & nonce) >> 24;
@@ -230,6 +277,12 @@ function hash() {
 
 // Main work loop (exactly like demo's wrapper.js)
 function work() {
+  // Check if we're ready to mine
+  if (!isReady || !currentJob || !input || !output) {
+    console.error('[Worker] work: Not ready to mine, isReady:', isReady, 'job:', !!currentJob, 'input:', !!input);
+    return;
+  }
+  
   const workStart = now();
   let hashes = 0;
   let ifMeetTarget = false;
@@ -237,7 +290,13 @@ function work() {
   
   // Hash for up to 1 second
   while (!ifMeetTarget && interval < 1000) {
-    hashes += hash();
+    const result = hash();
+    if (result === 0) {
+      // Hash failed, stop this work cycle
+      console.error('[Worker] Hash returned 0, stopping work cycle');
+      break;
+    }
+    hashes += result;
     ifMeetTarget = meetsTarget(output, target);
     interval = now() - workStart;
   }
@@ -297,24 +356,41 @@ function workThrottled() {
 
 // Message handler (matches demo's wrapper.js onMessage)
 self.onmessage = function(response) {
-  const data = response.data;
+  let data = response.data;
+  
+  // Handle config messages (from index.html informWorker)
+  if (data && data.type === 'config') {
+    console.log('[Worker] Received config message, ignoring (handled by main miner)');
+    return;
+  }
+  
+  // Handle wrapped job messages (from index.html on_servermsg)
+  // Format: { type: 'job', job: { blob, target, job_id, seed_hash, ... } }
+  if (data && data.type === 'job' && data.job) {
+    console.log('[Worker] Unwrapping job from type:job message');
+    data = data.job;
+  }
   
   // If not ready yet, queue the job and wait
   if (!isReady) {
-    console.log('[Worker] Not ready yet, queuing job:', data.job_id);
+    console.log('[Worker] Not ready yet, queuing job:', data?.job_id);
     pendingJob = data;
     return;
   }
   
   // Validate job data
   if (!data || !data.blob || !data.job_id) {
-    console.log('[Worker] Invalid job data received');
+    console.log('[Worker] Invalid job data received, missing blob or job_id:', 
+      data ? 'blob=' + !!data.blob + ', job_id=' + !!data.job_id : 'data is null');
     return;
   }
   
   // Check if new job
   if (!currentJob || currentJob.job_id !== data.job_id) {
-    setJob(data);
+    if (!setJob(data)) {
+      console.error('[Worker] Failed to set job');
+      return;
+    }
   }
   
   // Start mining with or without throttle
@@ -637,7 +713,7 @@ initModule();
   window.getHashesPerSecond = getHashesPerSecond;
   window.getTotalHashes = getTotalHashes;
   
-  console.log('[Miner] RandomX Miner v3.9.2 loaded (demo-compatible)');
+  console.log('[Miner] RandomX Miner v3.9.3 loaded (demo-compatible)');
   console.log('[Miner] Base URL:', BASE_URL);
   console.log('[Miner] Proxy:', config.proxy);
   console.log('[Miner] Pool:', config.pool);

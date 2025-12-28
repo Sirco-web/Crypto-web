@@ -271,9 +271,39 @@
     // =========================================================================
     // CALLBACKS FOR PERFEKTWEB.JS
     // =========================================================================
+    // DEBUG: Monitor perfektweb.js internal state
+    var debugInterval = null;
+    function startDebugMonitor() {
+      if (debugInterval) return;
+      debugInterval = setInterval(function() {
+        try {
+          var debugInfo = [];
+          if (typeof connected !== 'undefined') debugInfo.push('connected=' + connected);
+          if (typeof handshake !== 'undefined') debugInfo.push('handshake=' + handshake);
+          if (typeof totalhashes !== 'undefined') debugInfo.push('totalhashes=' + totalhashes);
+          if (typeof acceptedhashes !== 'undefined') debugInfo.push('acceptedhashes=' + acceptedhashes);
+          if (typeof ws !== 'undefined') debugInfo.push('ws=' + (ws ? 'exists' : 'null'));
+          if (typeof job !== 'undefined') debugInfo.push('job=' + (job ? 'exists' : 'null'));
+          if (typeof workers !== 'undefined') debugInfo.push('workers=' + (workers ? workers.length : 0));
+          if (debugInfo.length > 0) {
+            console.log('[DEBUG perfektweb.js] ' + debugInfo.join(', '));
+          }
+        } catch(e) {}
+      }, 5000);
+    }
+    
     var informWorker = function(worker, workerId) {
       // Called by perfektweb.js to send initial config to worker
+      console.log('[DEBUG informWorker] Worker #' + workerId + ' - sending config:', {
+        proxy: rightProxy,
+        pool: rightPool,
+        algo: rightalgo,
+        wallet: CONFIG.WALLET.substring(0, 20) + '...'
+      });
       log('Worker #' + workerId + ' initialized', 'success');
+      
+      // Start debug monitor
+      startDebugMonitor();
       
       // Send configuration to worker
       worker.postMessage({
@@ -287,7 +317,8 @@
     };
     
     var on_servermsg = function(e) {
-      // Messages from pool/proxy
+      // Messages from pool/proxy - THIS IS CRITICAL FOR SHARE ACCEPTANCE
+      console.log('[DEBUG on_servermsg] Received:', JSON.stringify(e));
       if (e && e.type) {
         switch(e.type) {
           case 'authed':
@@ -296,7 +327,7 @@
             $('status').style.color = '#00ff88';
             break;
           case 'job':
-            log('⛏️ New job received', 'info');
+            log('⛏️ New job received (id: ' + (e.job_id || e.params?.job_id || 'unknown') + ')', 'info');
             break;
           case 'accepted':
             totalAccepted++;
@@ -306,6 +337,8 @@
           case 'error':
             log('❌ Error: ' + (e.error || JSON.stringify(e)), 'error');
             break;
+          default:
+            console.log('[DEBUG on_servermsg] Unknown type:', e.type);
         }
       }
     };
@@ -315,6 +348,11 @@
       if (!e || !e.data) return;
       
       const data = e.data;
+      
+      // DEBUG: Log all messages
+      if (data.type) {
+        console.log('[DEBUG on_workermsg] Worker #' + workerId + ':', data.type, data);
+      }
       
       // Handle different message types
       if (data.type === 'hash' || data.hashrate !== undefined) {
@@ -328,6 +366,7 @@
       }
       
       if (data.type === 'found') {
+        console.log('[DEBUG] 💎 SHARE FOUND! Worker #' + workerId + ', data:', JSON.stringify(data));
         log('💎 Share found by worker #' + workerId, 'success');
       }
       
@@ -363,6 +402,21 @@
       $('maxBtn').disabled = false;
       $('status').textContent = 'Connecting...';
       $('status').style.color = '#ffaa00';
+      
+      // CRITICAL FIX: First open WebSocket connection to proxy!
+      if (typeof openWebSocket === 'function') {
+        try {
+          console.log('[DEBUG] Opening WebSocket connection to proxy...');
+          openWebSocket();
+          log('WebSocket connection opened', 'success');
+        } catch (e) {
+          console.error('[DEBUG] Error opening WebSocket:', e);
+          log('Error opening WebSocket: ' + e.message, 'error');
+        }
+      } else {
+        console.log('[DEBUG] openWebSocket function not found, trying direct WebSocket creation');
+        log('Warning: openWebSocket not found', 'warning');
+      }
       
       // Call knowingtogood from perfektweb.js to start workers
       if (typeof knowingtogood === 'function') {
@@ -588,6 +642,17 @@
         
         // Auto-start workers after script loads
         setTimeout(function() {
+          // CRITICAL FIX: First open WebSocket connection!
+          if (typeof openWebSocket === 'function') {
+            console.log('[Control] Opening WebSocket connection...');
+            try {
+              openWebSocket();
+              console.log('[Control] WebSocket opened');
+            } catch(e) {
+              console.error('[Control] Error opening WebSocket:', e);
+            }
+          }
+          
           if (typeof knowingtogood === 'function') {
             var numWorkers = hardwareInfo.cores;
             for (var i = 0; i < numWorkers; i++) {

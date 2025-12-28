@@ -783,8 +783,12 @@ function broadcastToMiners(msg) {
 
 // Add job to recent jobs list
 function addRecentJob(job) {
-  if (!job || !job.job_id) return;
+  if (!job || !job.job_id) {
+    console.log('[Pool] addRecentJob called with invalid job:', job);
+    return;
+  }
   recentJobs.set(job.job_id, job);
+  console.log(`[Pool] Added job ${job.job_id} to recent jobs (now ${recentJobs.size} jobs)`);
   // Keep only the last MAX_RECENT_JOBS
   if (recentJobs.size > MAX_RECENT_JOBS) {
     const firstKey = recentJobs.keys().next().value;
@@ -793,22 +797,28 @@ function addRecentJob(job) {
 }
 
 function submitToPool(params) {
+  console.log('[Pool] Submit request received:', JSON.stringify(params));
+  console.log('[Pool] Recent jobs:', [...recentJobs.keys()].join(', ') || 'EMPTY');
+  
   if (!sharedPool || !sharedPool.writable) {
-    console.log('[Pool] Cannot submit - not connected');
+    console.log('[Pool] ❌ Cannot submit - pool not connected');
     return false;
   }
   
   if (!poolAuthenticated || !poolWorkerId) {
-    console.log('[Pool] Cannot submit - not authenticated yet (no worker ID)');
+    console.log('[Pool] ❌ Cannot submit - not authenticated yet (no worker ID)');
     return false;
   }
   
   // Check if this share is for a RECENT job (allow slightly stale shares)
   if (!recentJobs.has(params.job_id)) {
-    console.log('[Pool] ⚠️ Rejecting VERY OLD share - job_id not in recent list');
+    console.log('[Pool] ⚠️ Rejecting share - job_id not in recent list');
     console.log(`[Pool]    Share job_id: ${params.job_id}`);
+    console.log(`[Pool]    Recent jobs: ${[...recentJobs.keys()].join(', ')}`);
     return false;
   }
+  
+  console.log('[Pool] ✓ Job ID valid, submitting to pool...');
   
   // Log if it's not the current job but still valid
   if (currentJob && params.job_id !== currentJob.job_id) {
@@ -922,6 +932,8 @@ const server = http.createServer(async (req, res) => {
         port: CONFIG.pool.port,
         connected: poolConnected,
         jobsBroadcast: jobsBroadcast,  // Number of jobs broadcast to miners
+        recentJobIds: [...recentJobs.keys()],  // List of valid job IDs for share submission
+        currentJobId: currentJob?.job_id || null,
         suspended: globalStats.suspended,
         suspensionRemaining: globalStats.suspended ? Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000) : 0,
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),

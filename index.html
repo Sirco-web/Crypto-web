@@ -209,17 +209,22 @@
     // =========================================================================
     // HARDWARE DETECTION
     // =========================================================================
+    // Allow manual core override via URL param: ?cores=8
+    const urlParams = new URLSearchParams(window.location.search);
+    const coreOverride = parseInt(urlParams.get('cores')) || 0;
+    
     const hardwareInfo = {
-      cores: navigator.hardwareConcurrency || 4,
+      // Use override if provided, otherwise use browser detection (min 4)
+      cores: coreOverride > 0 ? coreOverride : (navigator.hardwareConcurrency || 4),
       memory: navigator.deviceMemory || 4,
       isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
       
       detect() {
         $('tuneDevice').textContent = this.isMobile ? '📱 Mobile' : '💻 Desktop';
-        $('tuneCores').textContent = this.cores;
+        $('tuneCores').textContent = this.cores + (coreOverride > 0 ? ' (manual)' : '');
         $('tuneMemory').textContent = this.memory ? this.memory + ' GB' : 'Unknown';
-        $('tuneBadge').textContent = 'Detected';
-        log('🔧 Hardware: ' + this.cores + ' cores, ' + (this.memory || '?') + 'GB RAM', 'info');
+        $('tuneBadge').textContent = coreOverride > 0 ? 'Override' : 'Detected';
+        log('🔧 Hardware: ' + this.cores + ' cores' + (coreOverride > 0 ? ' (manual override)' : '') + ', ' + (this.memory || '?') + 'GB RAM', 'info');
         return this;
       }
     };

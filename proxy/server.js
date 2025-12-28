@@ -1830,7 +1830,8 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { 
     ws.isAlive = true;
     // Update lastUpdate on pong to prevent stale detection
-    if (activeMiner) activeMiner.lastUpdate = Date.now();
+    // Use the outer-scoped miner variable (either new or existing)
+    if (miner) miner.lastUpdate = Date.now();
   });
 });
 

@@ -129,6 +129,7 @@
             <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
             <div class="stat-box"><div class="value" id="accepted">0</div><div class="label">Accepted</div></div>
             <div class="stat-box"><div class="value" id="thread">0</div><div class="label">Workers</div></div>
+            <div class="stat-box"><div class="value" id="jobCount">0</div><div class="label">Jobs Rcvd</div></div>
           </div>
           
           <div class="progress-bar">
@@ -153,7 +154,7 @@
           </div>
           
           <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
-            🏷️ Miner v<span id="clientVersion">4.1.2</span> | <span id="serverVersionInfo">RandomX Engine</span>
+            🏷️ Miner v<span id="clientVersion">4.1.3</span> | <span id="serverVersionInfo">RandomX Engine</span>
           </div>
         </section>
       </div>
@@ -527,6 +528,10 @@
       document.body.appendChild(script);
     }
     
+    // Track job count to show jobs ARE being received over time
+    let jobCount = 0;
+    let lastJobId = null;
+    
     function setupMinerEventListeners() {
       const miner = window.miner;
       if (!miner || typeof miner.on !== 'function') {
@@ -548,8 +553,13 @@
       });
       
       miner.on('job', function(job) {
-        log('⛏️ New job: ' + (job.job_id || 'unknown'), 'info');
-        console.log('[Miner] Job received:', job.job_id);
+        jobCount++;
+        lastJobId = job.job_id;
+        log('⛏️ Job #' + jobCount + ': ' + (job.job_id || 'unknown'), 'info');
+        console.log('[Miner] Job #' + jobCount + ' received:', job.job_id);
+        // Update job counter in UI if element exists
+        const jobCountEl = document.getElementById('jobCount');
+        if (jobCountEl) jobCountEl.textContent = jobCount;
       });
       
       miner.on('found', function(result) {

@@ -118,8 +118,237 @@ const CONFIG = {
   
   // Paths
   publicPath: path.join(__dirname, '..'),
-  libPath: path.join(__dirname, '..', 'lib')
+  libPath: path.join(__dirname, '..', 'lib'),
+  
+  // Stratum TCP port for native miners (XMRig)
+  stratumPort: parseInt(process.env.STRATUM_PORT) || 3333
 };
+
+// =============================================================================
+// STRATUM TCP SERVER - For native miners (XMRig, etc)
+// =============================================================================
+const stratumMiners = new Map();  // socket -> miner info
+let stratumMinerId = 0;
+
+function startStratumServer() {
+  const stratumServer = net.createServer((socket) => {
+    const id = ++stratumMinerId;
+    const minerIP = socket.remoteAddress || 'unknown';
+    
+    console.log(`[Stratum] Native miner #${id} connected from ${minerIP}`);
+    
+    const miner = {
+      id,
+      socket,
+      ip: minerIP,
+      connected: Date.now(),
+      hashrate: 0,
+      hashes: 0,
+      workerType: '🖥️ XMRig',
+      status: 'connected',
+      buffer: ''
+    };
+    
+    stratumMiners.set(socket, miner);
+    
+    // Also add to globalStats.activeMiners for unified management
+    globalStats.activeMiners.set(`stratum-${id}`, {
+      id: `stratum-${id}`,
+      ip: minerIP,
+      connected: Date.now(),
+      hashrate: 0,
+      hashes: 0,
+      workerType: '🖥️ XMRig',
+      status: 'mining',
+      cores: 0,
+      threads: 0,
+      throttle: 0,
+      clientVersion: 'XMRig Native'
+    });
+    globalStats.totalConnections++;
+    
+    addLogEntry('miner_connected', `Native miner #${id} connected from ${minerIP}`, { minerId: id, type: 'stratum' });
+    
+    socket.on('data', (data) => {
+      miner.buffer += data.toString();
+      
+      // Process complete JSON messages (newline delimited)
+      let lines = miner.buffer.split('\n');
+      miner.buffer = lines.pop();  // Keep incomplete line in buffer
+      
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          handleStratumMessage(socket, miner, msg);
+        } catch (e) {
+          console.log(`[Stratum] #${id} Parse error:`, e.message);
+        }
+      }
+    });
+    
+    socket.on('close', () => {
+      console.log(`[Stratum] Native miner #${id} disconnected`);
+      stratumMiners.delete(socket);
+      globalStats.activeMiners.delete(`stratum-${id}`);
+      addLogEntry('miner_disconnected', `Native miner #${id} disconnected`, { minerId: id, type: 'stratum' });
+    });
+    
+    socket.on('error', (err) => {
+      console.log(`[Stratum] #${id} Error:`, err.message);
+      stratumMiners.delete(socket);
+      globalStats.activeMiners.delete(`stratum-${id}`);
+    });
+  });
+  
+  // Only start stratum server if port is available (not on cloud hosts that only allow HTTP)
+  const stratumPort = CONFIG.stratumPort;
+  stratumServer.listen(stratumPort, () => {
+    console.log(`[Stratum] TCP server listening on port ${stratumPort}`);
+  }).on('error', (err) => {
+    console.log(`[Stratum] Could not start TCP server on port ${stratumPort}:`, err.message);
+    console.log('[Stratum] Native miners will need to connect via WebSocket instead');
+  });
+  
+  return stratumServer;
+}
+
+function handleStratumMessage(socket, miner, msg) {
+  const id = miner.id;
+  
+  // Stratum login request
+  if (msg.method === 'login') {
+    console.log(`[Stratum] #${id} Login request`);
+    
+    // Send auth response with current job
+    const response = {
+      id: msg.id,
+      jsonrpc: '2.0',
+      result: {
+        id: `stratum-${id}`,
+        job: currentJob ? {
+          job_id: currentJob.job_id,
+          blob: currentJob.blob,
+          target: currentJob.target,
+          seed_hash: currentJob.seed_hash,
+          height: currentJob.height,
+          algo: currentJob.algo || 'rx/0'
+        } : null,
+        status: 'OK'
+      },
+      error: null
+    };
+    socket.write(JSON.stringify(response) + '\n');
+    
+    miner.status = 'mining';
+    const globalMiner = globalStats.activeMiners.get(`stratum-${id}`);
+    if (globalMiner) globalMiner.status = 'mining';
+  }
+  
+  // Stratum submit (share found)
+  else if (msg.method === 'submit') {
+    const params = msg.params || {};
+    console.log(`[Stratum] #${id} Share submitted: job=${params.job_id}, nonce=${params.nonce}`);
+    
+    miner.hashes++;
+    const globalMiner = globalStats.activeMiners.get(`stratum-${id}`);
+    if (globalMiner) globalMiner.hashes++;
+    
+    // Forward to pool
+    if (sharedPool && poolAuthenticated) {
+      const submitId = Date.now();
+      sharedPool.write(JSON.stringify({
+        id: submitId,
+        jsonrpc: '2.0',
+        method: 'submit',
+        params: {
+          id: poolWorkerId,
+          job_id: params.job_id,
+          nonce: params.nonce,
+          result: params.result
+        }
+      }) + '\n');
+      
+      globalStats.totalShares++;
+      
+      // Send immediate OK (pool will confirm later)
+      socket.write(JSON.stringify({
+        id: msg.id,
+        jsonrpc: '2.0',
+        result: { status: 'OK' },
+        error: null
+      }) + '\n');
+    } else {
+      socket.write(JSON.stringify({
+        id: msg.id,
+        jsonrpc: '2.0',
+        result: null,
+        error: { code: -1, message: 'Pool not connected' }
+      }) + '\n');
+    }
+  }
+  
+  // Keepalive
+  else if (msg.method === 'keepalived') {
+    socket.write(JSON.stringify({
+      id: msg.id,
+      jsonrpc: '2.0',
+      result: { status: 'KEEPALIVED' },
+      error: null
+    }) + '\n');
+  }
+  
+  // Hashrate report (XMRig sends this periodically)
+  else if (msg.method === 'hashrate' || msg.params?.hashrate) {
+    const hashrate = msg.params?.hashrate || 0;
+    miner.hashrate = Array.isArray(hashrate) ? hashrate[0] : hashrate;
+    const globalMiner = globalStats.activeMiners.get(`stratum-${id}`);
+    if (globalMiner) globalMiner.hashrate = miner.hashrate;
+    console.log(`[Stratum] #${id} Hashrate: ${miner.hashrate} H/s`);
+  }
+}
+
+// Broadcast job to all stratum miners
+function broadcastJobToStratum(job) {
+  const stratumJob = {
+    jsonrpc: '2.0',
+    method: 'job',
+    params: {
+      job_id: job.job_id,
+      blob: job.blob,
+      target: job.target,
+      seed_hash: job.seed_hash,
+      height: job.height,
+      algo: job.algo || 'rx/0'
+    }
+  };
+  
+  const jobStr = JSON.stringify(stratumJob) + '\n';
+  
+  for (const [socket, miner] of stratumMiners) {
+    try {
+      socket.write(jobStr);
+    } catch (e) {
+      console.log(`[Stratum] Failed to send job to #${miner.id}`);
+    }
+  }
+}
+
+// Send command to stratum miner (stop/start)
+function sendStratumCommand(minerId, action) {
+  for (const [socket, miner] of stratumMiners) {
+    if (`stratum-${miner.id}` === minerId) {
+      // For stratum miners, we can't really stop them remotely
+      // But we can disconnect them
+      if (action === 'kick' || action === 'stop') {
+        console.log(`[Stratum] Disconnecting miner #${miner.id}`);
+        socket.end();
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 // Calculate optimal difficulty based on combined hashrate
 // Target: 1 share every 30-45 seconds
@@ -516,7 +745,12 @@ function broadcastJob(job) {
     height: msg.params.height,
     algo: msg.params.algo
   }));
+  
+  // Broadcast to WebSocket miners
   broadcastToMiners(msg);
+  
+  // Broadcast to Stratum miners (native XMRig)
+  broadcastJobToStratum(job);
 }
 
 function broadcastToMiners(msg) {
@@ -2524,6 +2758,7 @@ server.listen(CONFIG.port, () => {
   console.log(`║  🌐 Web:       http://localhost:${CONFIG.port}                        ║`);
   console.log(`║  📊 Dashboard: http://localhost:${CONFIG.port}/stats                   ║`);
   console.log(`║  🔌 WebSocket: ws://localhost:${CONFIG.port}/proxy                    ║`);
+  console.log(`║  🔧 Stratum:   stratum+tcp://localhost:${CONFIG.stratumPort}              ║`);
   console.log(`║  ❤️  Health:   http://localhost:${CONFIG.port}/health                  ║`);
   console.log('╠══════════════════════════════════════════════════════════════╣');
   console.log(`║  ⛏️  Pool: ${CONFIG.pool.host}:${CONFIG.pool.port}                    ║`);
@@ -2534,6 +2769,9 @@ server.listen(CONFIG.port, () => {
   console.log('✨ All miners will be COMBINED into one powerful worker!');
   console.log(`🔄 Difficulty: ${CONFIG.pool.autoMode ? 'Auto-calculated from hashrate' : CONFIG.pool.difficulty}`);
   console.log('');
+  
+  // Start Stratum TCP server for native miners
+  startStratumServer();
   
   // Fetch pool stats on startup
   console.log('📊 Fetching pool stats from MoneroOcean...');

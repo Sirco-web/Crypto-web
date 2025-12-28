@@ -1,46 +1,42 @@
 #!/bin/bash
-#
+# =============================================================================
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                    🐧 LINUX RANDOMX MINER (XMRig)                            ║
-# ║                         MoneroOcean Pool Miner                               ║
-# ║                     Works on ANY Linux Distribution                          ║
+# ║                       XMR Native Miner for Linux                             ║
+# ║                    Connects to Proxy Server (Combined Mining)                ║
+# ╠══════════════════════════════════════════════════════════════════════════════╣
+# ║  Works on: Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, Manjaro,              ║
+# ║            openSUSE, Alpine, Raspberry Pi, and any Linux with bash           ║
+# ║  This miner connects through the proxy server so your hashrate is           ║
+# ║  combined with all other miners. Controllable from the Owner Panel.         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-#
-# Supports: Ubuntu, Debian, Fedora, CentOS, Arch, Alpine, OpenSUSE, and more!
-#
-# Features:
-# - CPU temperature monitoring (auto throttle if too hot)
-# - Connection quality check before mining
-# - Nice terminal UI with colors
-# - Auto XMRig download and setup
-# - Full power by default
-# - Works on x86_64 and ARM64
-#
+# =============================================================================
+
+set -e
 
 # =============================================================================
-# VERSION INFO
+# CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
 CLIENT_VERSION="3.0.0"
-CLIENT_VERSION_DATE="2025-12-27"
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-POOL_URL="gulf.moneroocean.stream:10128"
-WALLET="42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB"
 WORKER_NAME="linux-miner"
-ALGO="rx/0"
+
+# Proxy server settings
+PROXY_HOST="respectable-gilemette-timco-f0e524a9.koyeb.app"
+PROXY_WS_URL="wss://${PROXY_HOST}/proxy"
+
+# Local bridge (WebSocket to Stratum)
+LOCAL_STRATUM_HOST="127.0.0.1"
+LOCAL_STRATUM_PORT=3333
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE=80
 TEMP_STOP=90
 TEMP_RESUME=70
 
-# XMRig download URLs
-XMRIG_VERSION="6.21.1"
+# XMRig settings
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XMRIG_DIR="$SCRIPT_DIR/xmrig"
 XMRIG_BIN="$XMRIG_DIR/xmrig"
+BRIDGE_SCRIPT="$SCRIPT_DIR/ws_bridge.py"
 
 # =============================================================================
 # COLORS
@@ -52,7 +48,7 @@ BLUE='\033[0;94m'
 CYAN='\033[0;96m'
 WHITE='\033[0;97m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # =============================================================================
 # UI HELPERS
@@ -67,8 +63,8 @@ print_banner() {
     echo -e "${CYAN}║${YELLOW}  ██╔╝ ██╗██║ ╚═╝ ██║██║  ██║    ██║ ╚═╝ ██║██║██║ ╚████║███████╗██║  ██║     ${CYAN}║${NC}"
     echo -e "${CYAN}║${YELLOW}  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝     ${CYAN}║${NC}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${WHITE}  RandomX Linux Miner v${CLIENT_VERSION} (Full Power Mode)                            ${CYAN}║${NC}"
-    echo -e "${CYAN}║${GREEN}  Pool: MoneroOcean                                                            ${CYAN}║${NC}"
+    echo -e "${CYAN}║${WHITE}  Linux Native Miner v${CLIENT_VERSION} - Connects via Proxy (Combined Mining)       ${CYAN}║${NC}"
+    echo -e "${CYAN}║${GREEN}  Proxy: ${PROXY_HOST}:${PROXY_PORT}                            ${CYAN}║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -89,12 +85,12 @@ log_error() {
     echo -e "${WHITE}[$(date +%H:%M:%S)] ${RED}[x]${NC} $1"
 }
 
-log_mining() {
-    echo -e "${WHITE}[$(date +%H:%M:%S)] ${GREEN}[*]${NC} $1"
+log_hash() {
+    echo -e "${WHITE}[$(date +%H:%M:%S)] ${CYAN}[#]${NC} $1"
 }
 
 # =============================================================================
-# DISTRO DETECTION
+# SYSTEM DETECTION
 # =============================================================================
 detect_distro() {
     if [ -f /etc/os-release ]; then
@@ -107,268 +103,342 @@ detect_distro() {
         DISTRO=$DISTRIB_ID
         DISTRO_VERSION=$DISTRIB_RELEASE
         DISTRO_NAME=$DISTRIB_DESCRIPTION
-    elif [ -f /etc/debian_version ]; then
-        DISTRO="debian"
-        DISTRO_VERSION=$(cat /etc/debian_version)
-        DISTRO_NAME="Debian $DISTRO_VERSION"
-    elif [ -f /etc/redhat-release ]; then
-        DISTRO="rhel"
-        DISTRO_NAME=$(cat /etc/redhat-release)
     else
         DISTRO="unknown"
+        DISTRO_VERSION="unknown"
         DISTRO_NAME="Unknown Linux"
     fi
     
-    log_info "Detected: $DISTRO_NAME"
+    log_info "Distribution: $DISTRO_NAME"
 }
 
-# =============================================================================
-# ARCHITECTURE DETECTION
-# =============================================================================
 detect_arch() {
     ARCH=$(uname -m)
     case $ARCH in
         x86_64|amd64)
-            ARCH_TYPE="x64"
-            XMRIG_URL="https://github.com/xmrig/xmrig/releases/download/v${XMRIG_VERSION}/xmrig-${XMRIG_VERSION}-linux-x64.tar.gz"
+            ARCH_NAME="x64"
+            XMRIG_ARCH="linux-static-x64"
             ;;
         aarch64|arm64)
-            ARCH_TYPE="arm64"
-            XMRIG_URL="https://github.com/xmrig/xmrig/releases/download/v${XMRIG_VERSION}/xmrig-${XMRIG_VERSION}-linux-static-x64.tar.gz"
-            log_warning "ARM64 detected - using static build"
+            ARCH_NAME="ARM64"
+            XMRIG_ARCH="linux-static-arm64" 
             ;;
         *)
             log_error "Unsupported architecture: $ARCH"
             exit 1
             ;;
     esac
-    log_info "Architecture: $ARCH_TYPE"
+    log_info "Architecture: $ARCH_NAME ($ARCH)"
+}
+
+get_cpu_cores() {
+    CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+    CPU_NAME=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
+    log_info "CPU: $CPU_NAME"
+    log_info "Cores: $CPU_CORES"
+}
+
+get_cpu_temp() {
+    # Try multiple methods to get CPU temperature
+    TEMP=""
+    
+    # Method 1: sensors command
+    if command -v sensors &> /dev/null; then
+        TEMP=$(sensors 2>/dev/null | grep -oP 'Core 0.*?\+\K[0-9.]+' | head -1)
+    fi
+    
+    # Method 2: thermal_zone
+    if [ -z "$TEMP" ] && [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+        TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+        if [ -n "$TEMP" ]; then
+            TEMP=$((TEMP / 1000))
+        fi
+    fi
+    
+    # Method 3: hwmon
+    if [ -z "$TEMP" ]; then
+        for hwmon in /sys/class/hwmon/hwmon*/temp1_input; do
+            if [ -f "$hwmon" ]; then
+                TEMP=$(cat "$hwmon" 2>/dev/null)
+                if [ -n "$TEMP" ]; then
+                    TEMP=$((TEMP / 1000))
+                    break
+                fi
+            fi
+        done
+    fi
+    
+    # Method 4: Raspberry Pi
+    if [ -z "$TEMP" ] && command -v vcgencmd &> /dev/null; then
+        TEMP=$(vcgencmd measure_temp 2>/dev/null | grep -oP '[0-9.]+')
+    fi
+    
+    echo "$TEMP"
 }
 
 # =============================================================================
 # CONNECTION CHECK
 # =============================================================================
 check_connection() {
-    log_info "Checking connection quality..."
+    log_info "Checking connection to proxy server..."
     
     # Check internet
-    if ping -c 1 -W 5 8.8.8.8 &>/dev/null; then
+    if ping -c 1 8.8.8.8 &> /dev/null; then
         log_success "Internet: Connected"
     else
-        log_error "Internet: No connection!"
-        return 1
+        if ping -c 1 1.1.1.1 &> /dev/null; then
+            log_success "Internet: Connected"
+        else
+            log_error "Internet: No connection"
+            return 1
+        fi
     fi
     
-    # Check pool (extract host and port)
-    POOL_HOST=$(echo $POOL_URL | cut -d: -f1)
-    POOL_PORT=$(echo $POOL_URL | cut -d: -f2)
-    
-    if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$POOL_HOST/$POOL_PORT" 2>/dev/null; then
-        log_success "Pool ($POOL_HOST): Reachable"
+    # Check proxy server (HTTPS port)
+    if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/443" 2>/dev/null; then
+        log_success "Proxy Server ($PROXY_HOST): Reachable"
     else
-        # Try with nc if available
-        if command -v nc &>/dev/null; then
-            if nc -z -w10 $POOL_HOST $POOL_PORT 2>/dev/null; then
-                log_success "Pool ($POOL_HOST): Reachable"
+        if command -v nc &> /dev/null; then
+            if nc -z -w10 $PROXY_HOST 443 2>/dev/null; then
+                log_success "Proxy Server ($PROXY_HOST): Reachable"
             else
-                log_error "Pool: Unreachable"
-                return 1
+                log_warning "Proxy Server: Cannot verify (may still work)"
             fi
         else
-            log_warning "Pool: Cannot verify (nc not installed)"
+            log_warning "Proxy Server: Cannot verify (nc not installed)"
         fi
     fi
     
-    # Latency test
-    if command -v ping &>/dev/null; then
-        LATENCY=$(ping -c 3 $POOL_HOST 2>/dev/null | tail -1 | awk '{print $4}' | cut -d '/' -f 2)
-        if [ -n "$LATENCY" ]; then
-            if (( $(echo "$LATENCY < 100" | bc -l 2>/dev/null || echo 0) )); then
-                log_success "Latency: ${LATENCY}ms (Excellent)"
-            elif (( $(echo "$LATENCY < 250" | bc -l 2>/dev/null || echo 0) )); then
-                log_success "Latency: ${LATENCY}ms (Good)"
-            else
-                log_warning "Latency: ${LATENCY}ms (May cause stale shares)"
-            fi
-        fi
-    fi
-    
-    log_success "Connection check passed!"
     return 0
-}
-
-# =============================================================================
-# CPU TEMPERATURE
-# =============================================================================
-get_cpu_temp() {
-    # Method 1: /sys/class/thermal (most common)
-    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-        TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-        if [ -n "$TEMP" ]; then
-            echo $((TEMP / 1000))
-            return 0
-        fi
-    fi
-    
-    # Method 2: sensors command
-    if command -v sensors &>/dev/null; then
-        TEMP=$(sensors 2>/dev/null | grep -oP 'Core 0.*?\+\K[0-9.]+' | head -1)
-        if [ -n "$TEMP" ]; then
-            echo "${TEMP%.*}"
-            return 0
-        fi
-    fi
-    
-    # Method 3: /sys/devices/platform/coretemp
-    for f in /sys/devices/platform/coretemp.*/hwmon/hwmon*/temp*_input; do
-        if [ -f "$f" ]; then
-            TEMP=$(cat "$f" 2>/dev/null)
-            if [ -n "$TEMP" ]; then
-                echo $((TEMP / 1000))
-                return 0
-            fi
-        fi
-    done
-    
-    # Method 4: ACPI
-    if [ -f /proc/acpi/thermal_zone/THM0/temperature ]; then
-        TEMP=$(cat /proc/acpi/thermal_zone/THM0/temperature 2>/dev/null | awk '{print $2}')
-        if [ -n "$TEMP" ]; then
-            echo "$TEMP"
-            return 0
-        fi
-    fi
-    
-    echo ""
-    return 1
 }
 
 # =============================================================================
 # XMRIG INSTALLATION
 # =============================================================================
-install_xmrig() {
-    log_info "XMRig not found. Downloading..."
+install_dependencies() {
+    log_info "Checking dependencies..."
     
-    # Create directory
+    # Check for wget or curl
+    if ! command -v wget &> /dev/null && ! command -v curl &> /dev/null; then
+        log_warning "Installing wget..."
+        case $DISTRO in
+            ubuntu|debian|raspbian)
+                sudo apt-get update && sudo apt-get install -y wget
+                ;;
+            fedora)
+                sudo dnf install -y wget
+                ;;
+            centos|rhel|rocky|alma)
+                sudo yum install -y wget
+                ;;
+            arch|manjaro)
+                sudo pacman -Sy --noconfirm wget
+                ;;
+            opensuse*)
+                sudo zypper install -y wget
+                ;;
+            alpine)
+                sudo apk add wget
+                ;;
+        esac
+    fi
+}
+
+download_xmrig() {
+    if [ -f "$XMRIG_BIN" ]; then
+        log_success "XMRig already installed"
+        return 0
+    fi
+    
+    log_info "Downloading XMRig 6.21.1..."
+    
     mkdir -p "$XMRIG_DIR"
+    cd "$XMRIG_DIR"
     
-    # Download
-    TARBALL="$SCRIPT_DIR/xmrig.tar.gz"
-    log_info "Downloading from GitHub..."
+    XMRIG_URL="https://github.com/xmrig/xmrig/releases/download/v6.21.1/xmrig-6.21.1-${XMRIG_ARCH}.tar.gz"
     
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "$TARBALL" "$XMRIG_URL"
-    elif command -v curl &>/dev/null; then
-        curl -L -o "$TARBALL" "$XMRIG_URL"
+    if command -v wget &> /dev/null; then
+        wget -q --show-progress "$XMRIG_URL" -O xmrig.tar.gz
+    elif command -v curl &> /dev/null; then
+        curl -L --progress-bar "$XMRIG_URL" -o xmrig.tar.gz
     else
-        log_error "Neither wget nor curl found. Please install one."
-        exit 1
+        log_error "No download tool available (wget or curl)"
+        return 1
     fi
     
-    if [ ! -f "$TARBALL" ]; then
-        log_error "Download failed!"
-        exit 1
-    fi
-    
-    log_success "Download complete!"
-    
-    # Extract
-    log_info "Extracting..."
-    tar -xzf "$TARBALL" -C "$SCRIPT_DIR"
-    
-    # Find extracted folder and move contents
-    EXTRACTED=$(find "$SCRIPT_DIR" -maxdepth 1 -type d -name "xmrig-*" | head -1)
-    if [ -d "$EXTRACTED" ]; then
-        rm -rf "$XMRIG_DIR"
-        mv "$EXTRACTED" "$XMRIG_DIR"
-    fi
-    
-    # Cleanup
-    rm -f "$TARBALL"
-    
-    # Make executable
-    chmod +x "$XMRIG_BIN"
+    log_info "Extracting XMRig..."
+    tar -xzf xmrig.tar.gz --strip-components=1
+    rm -f xmrig.tar.gz
     
     if [ -f "$XMRIG_BIN" ]; then
+        chmod +x "$XMRIG_BIN"
         log_success "XMRig installed successfully!"
         return 0
     else
-        log_error "Installation failed!"
+        log_error "XMRig extraction failed"
         return 1
     fi
 }
 
-check_xmrig() {
-    if [ -f "$XMRIG_BIN" ] && [ -x "$XMRIG_BIN" ]; then
-        return 0
+# =============================================================================
+# BRIDGE
+# =============================================================================
+BRIDGE_PID=""
+
+start_bridge() {
+    if [ ! -f "$BRIDGE_SCRIPT" ]; then
+        log_error "Bridge script not found: ws_bridge.py"
+        return 1
     fi
-    install_xmrig
-    return $?
+    
+    log_info "Checking Python and websockets..."
+    
+    # Check for Python
+    if command -v python3 &> /dev/null; then
+        PYTHON_CMD="python3"
+    elif command -v python &> /dev/null; then
+        PYTHON_CMD="python"
+    else
+        log_error "Python not found. Please install Python 3"
+        return 1
+    fi
+    
+    # Install websockets if needed
+    $PYTHON_CMD -c "import websockets" 2>/dev/null || {
+        log_info "Installing websockets library..."
+        $PYTHON_CMD -m pip install websockets --user -q
+    }
+    
+    log_info "Starting WebSocket bridge..."
+    $PYTHON_CMD "$BRIDGE_SCRIPT" &
+    BRIDGE_PID=$!
+    
+    # Wait for bridge to start
+    sleep 3
+    
+    if kill -0 $BRIDGE_PID 2>/dev/null; then
+        log_success "WebSocket bridge started (PID: $BRIDGE_PID)"
+        return 0
+    else
+        log_error "Bridge failed to start"
+        return 1
+    fi
 }
 
-# =============================================================================
-# TEMPERATURE MONITOR (Background)
-# =============================================================================
-MINER_PID=""
-TEMP_PAUSED=0
-
-temp_monitor() {
-    while true; do
-        TEMP=$(get_cpu_temp)
-        if [ -n "$TEMP" ] && [ "$TEMP" -gt 0 ]; then
-            if [ "$TEMP" -ge "$TEMP_STOP" ] && [ "$TEMP_PAUSED" -eq 0 ]; then
-                log_error "CPU TEMP CRITICAL: ${TEMP}°C - STOPPING MINER!"
-                if [ -n "$MINER_PID" ] && kill -0 "$MINER_PID" 2>/dev/null; then
-                    kill "$MINER_PID" 2>/dev/null
-                fi
-                TEMP_PAUSED=1
-            elif [ "$TEMP" -le "$TEMP_RESUME" ] && [ "$TEMP_PAUSED" -eq 1 ]; then
-                log_success "CPU TEMP OK: ${TEMP}°C - Resuming..."
-                TEMP_PAUSED=0
-                start_xmrig &
-            elif [ "$TEMP" -ge "$TEMP_THROTTLE" ]; then
-                log_warning "CPU TEMP HIGH: ${TEMP}°C"
-            fi
-        fi
-        sleep 10
-    done
+stop_bridge() {
+    if [ -n "$BRIDGE_PID" ]; then
+        log_warning "Stopping bridge..."
+        kill $BRIDGE_PID 2>/dev/null || true
+        BRIDGE_PID=""
+    fi
 }
 
 # =============================================================================
 # MINING
 # =============================================================================
-start_xmrig() {
-    log_mining "Starting XMRig at FULL POWER..."
-    log_info "Using all $(nproc) CPU cores"
+MINER_PID=""
+CURRENT_THREADS=""
+THROTTLED=0
+PAUSED=0
+
+start_miner() {
+    local threads=${1:-$CPU_CORES}
+    CURRENT_THREADS=$threads
+    
+    # Start bridge first if not running
+    if [ -z "$BRIDGE_PID" ] || ! kill -0 $BRIDGE_PID 2>/dev/null; then
+        if ! start_bridge; then
+            log_error "Cannot start without bridge"
+            return 1
+        fi
+    fi
+    
+    # Connect to local bridge
+    POOL_URL="stratum+tcp://${LOCAL_STRATUM_HOST}:${LOCAL_STRATUM_PORT}"
+    
+    log_info "Starting XMRig with $threads threads..."
+    log_info "Connecting to local bridge: $POOL_URL"
     
     "$XMRIG_BIN" \
         -o "$POOL_URL" \
-        -u "$WALLET" \
-        -p "$WORKER_NAME" \
-        -a "$ALGO" \
-        -k \
-        --donate-level=1 \
-        --print-time=5 \
-        2>&1 | while IFS= read -r line; do
-            # Colorize output
-            if [[ "$line" == *"accepted"* ]]; then
-                echo -e "${GREEN}${line}${NC}"
-            elif [[ "$line" == *"rejected"* ]]; then
-                echo -e "${RED}${line}${NC}"
-            elif [[ "$line" == *"speed"* ]] || [[ "$line" == *"H/s"* ]]; then
-                echo -e "${CYAN}${line}${NC}"
-            elif [[ "$line" == *"error"* ]]; then
-                echo -e "${RED}${line}${NC}"
-            elif [[ "$line" == *"new job"* ]]; then
-                echo -e "${YELLOW}${line}${NC}"
-            elif [[ "$line" == *"BLOCK"* ]] || [[ "$line" == *"block"* ]]; then
-                echo -e "${GREEN}${BOLD}*** ${line} ***${NC}"
-            else
-                echo "$line"
+        -u "$WORKER_NAME" \
+        -p "x" \
+        -a "rx/0" \
+        -t "$threads" \
+        --no-color \
+        --print-time=10 \
+        2>&1 | while read -r line; do
+            # Parse output
+            if echo "$line" | grep -qi "speed"; then
+                HASHRATE=$(echo "$line" | grep -oP '\d+\.\d+(?= H/s)' | head -1)
+                if [ -n "$HASHRATE" ]; then
+                    log_hash "Hashrate: ${HASHRATE} H/s"
+                fi
+            elif echo "$line" | grep -qi "accepted"; then
+                log_success "Share accepted!"
+            elif echo "$line" | grep -qi "rejected"; then
+                log_warning "Share rejected"
+            elif echo "$line" | grep -qi "use pool\|connected"; then
+                log_success "Connected to proxy server!"
+            elif echo "$line" | grep -qi "error\|failed"; then
+                log_error "$line"
             fi
-        done
+        done &
     
     MINER_PID=$!
+    log_success "XMRig started (PID: $MINER_PID)"
+}
+
+stop_miner() {
+    if [ -n "$MINER_PID" ]; then
+        log_warning "Stopping XMRig..."
+        kill $MINER_PID 2>/dev/null || true
+        pkill -f "xmrig.*127.0.0.1" 2>/dev/null || true
+        MINER_PID=""
+    fi
+}
+
+# =============================================================================
+# TEMPERATURE MONITORING
+# =============================================================================
+temp_monitor() {
+    while true; do
+        TEMP=$(get_cpu_temp)
+        
+        if [ -n "$TEMP" ]; then
+            TEMP_INT=${TEMP%.*}
+            
+            if [ "$TEMP_INT" -ge "$TEMP_STOP" ]; then
+                if [ "$PAUSED" -eq 0 ]; then
+                    log_error "🔥 CPU TEMP: ${TEMP}°C - STOPPING MINER!"
+                    PAUSED=1
+                    stop_miner
+                fi
+            elif [ "$TEMP_INT" -ge "$TEMP_THROTTLE" ]; then
+                if [ "$THROTTLED" -eq 0 ]; then
+                    log_warning "⚠️  CPU TEMP: ${TEMP}°C - Throttling to 50%"
+                    THROTTLED=1
+                    stop_miner
+                    sleep 1
+                    start_miner $((CPU_CORES / 2))
+                fi
+            elif [ "$TEMP_INT" -lt "$TEMP_RESUME" ]; then
+                if [ "$PAUSED" -eq 1 ]; then
+                    log_success "✓ CPU TEMP: ${TEMP}°C - Resuming mining"
+                    PAUSED=0
+                    start_miner $CPU_CORES
+                elif [ "$THROTTLED" -eq 1 ]; then
+                    log_success "✓ CPU TEMP: ${TEMP}°C - Restoring full power"
+                    THROTTLED=0
+                    stop_miner
+                    sleep 1
+                    start_miner $CPU_CORES
+                fi
+            fi
+        fi
+        
+        sleep 10
+    done
 }
 
 # =============================================================================
@@ -376,16 +446,10 @@ start_xmrig() {
 # =============================================================================
 cleanup() {
     echo ""
-    log_warning "Shutting down..."
-    
-    # Kill background jobs
-    jobs -p | xargs -r kill 2>/dev/null
-    
-    if [ -n "$MINER_PID" ]; then
-        kill "$MINER_PID" 2>/dev/null
-    fi
-    
-    log_info "Miner stopped."
+    log_warning "Stopping miner..."
+    stop_miner
+    stop_bridge
+    log_info "Goodbye!"
     exit 0
 }
 
@@ -397,52 +461,53 @@ trap cleanup SIGINT SIGTERM
 main() {
     print_banner
     
-    log_info "Version: $CLIENT_VERSION ($CLIENT_VERSION_DATE)"
+    # Detect system
     detect_distro
     detect_arch
-    log_info "CPU Cores: $(nproc)"
+    get_cpu_cores
     echo ""
     
-    # Connection check
+    # Check connection
     if ! check_connection; then
-        log_error "Connection check failed!"
-        log_error "Please check your internet connection and try again."
+        log_error "Cannot connect to internet. Please check your connection."
         exit 1
     fi
-    
-    echo ""
-    log_info "Wallet: ${WALLET:0:12}...${WALLET: -8}"
-    log_info "Pool: $POOL_URL"
-    log_info "Algorithm: $ALGO (RandomX)"
-    log_mining "Mode: FULL POWER (all cores)"
     echo ""
     
-    # Temperature check
-    TEMP=$(get_cpu_temp)
-    if [ -n "$TEMP" ] && [ "$TEMP" -gt 0 ]; then
-        log_info "CPU Temperature: ${TEMP}°C"
-    else
-        log_warning "CPU Temperature: Not available (install lm-sensors)"
-    fi
-    
-    echo ""
-    echo -e "${YELLOW}$(printf '=%.0s' {1..78})${NC}"
-    echo -e "${YELLOW}  Press Ctrl+C to stop mining${NC}"
-    echo -e "${YELLOW}$(printf '=%.0s' {1..78})${NC}"
-    echo ""
-    
-    # Check/Install XMRig
-    if ! check_xmrig; then
-        log_error "Failed to install XMRig"
+    # Install dependencies and XMRig
+    install_dependencies
+    if ! download_xmrig; then
+        log_error "Cannot proceed without XMRig"
         exit 1
     fi
+    echo ""
     
-    # Start temperature monitor in background
+    # Important note
+    echo -e "${YELLOW}================================================================================${NC}"
+    echo -e "${YELLOW}  ✓ This miner connects through the proxy server (WebSocket bridge)${NC}"
+    echo -e "${YELLOW}  ✓ Your hashrate will be COMBINED with all other miners${NC}"
+    echo -e "${YELLOW}  ✓ You can be controlled from the Owner Panel${NC}"
+    echo -e "${YELLOW}================================================================================${NC}"
+    echo ""
+    
+    # Start temp monitor in background
     temp_monitor &
+    TEMP_MONITOR_PID=$!
     
-    # Start mining
-    start_xmrig
+    # Start mining (full power)
+    log_info "Starting miner (Full Power Mode - $CPU_CORES threads)..."
+    start_miner $CPU_CORES
+    
+    echo ""
+    log_success "Mining started! Press Ctrl+C to stop."
+    echo ""
+    
+    # Wait
+    wait $MINER_PID 2>/dev/null || true
+    
+    # If we get here, miner exited
+    log_warning "Miner process ended"
+    cleanup
 }
 
-# Run
-main "$@"
+main

@@ -1,55 +1,38 @@
 #!/usr/bin/env python3
-"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    🔥 WINDOWS RANDOMX MINER (XMRig)                          ║
-║                         MoneroOcean Pool Miner                               ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-Native Windows miner using XMRig for maximum RandomX performance.
-Connects directly to MoneroOcean pool.
-
-Features:
-- CPU temperature monitoring (auto throttle if too hot)
-- Connection quality check before mining
-- Nice terminal UI with live stats
-- Auto XMRig download and setup
-- Full power by default
-"""
+# =============================================================================
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                       XMR Native Miner for Windows                           ║
+# ║                    Connects to Proxy Server (Combined Mining)                ║
+# ╠══════════════════════════════════════════════════════════════════════════════╣
+# ║  This miner connects through the proxy server so your hashrate is           ║
+# ║  combined with all other miners. Controllable from the Owner Panel.         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+# =============================================================================
 
 import os
 import sys
-import time
 import json
+import time
 import socket
-import subprocess
-import platform
 import threading
-import urllib.request
-import urllib.error
+import subprocess
 import zipfile
-import shutil
-from datetime import datetime
+import urllib.request
+import platform
 
 # =============================================================================
-# VERSION INFO
+# CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
 CLIENT_VERSION = "3.0.0"
-CLIENT_VERSION_DATE = "2025-12-27"
-CLIENT_TYPE = "windows-python"
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-# Pool settings (direct to MoneroOcean)
-POOL_URL = "gulf.moneroocean.stream:10128"
-WALLET = "42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB"
 WORKER_NAME = "windows-miner"
-PASS = "x"
-ALGO = "rx/0"
 
-# Proxy settings (for reporting stats)
+# Proxy server settings
 PROXY_HOST = "respectable-gilemette-timco-f0e524a9.koyeb.app"
-PROXY_PORT = 443
+PROXY_WS_URL = f"wss://{PROXY_HOST}/proxy"
+
+# Local bridge for XMRig (run ws_bridge.py first, or use direct WebSocket mining)
+LOCAL_STRATUM_HOST = "127.0.0.1"
+LOCAL_STRATUM_PORT = 3333
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80  # Start throttling at 80°C
@@ -60,6 +43,9 @@ TEMP_RESUME = 70    # Resume at 70°C
 XMRIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xmrig")
 XMRIG_EXE = os.path.join(XMRIG_DIR, "xmrig.exe")
 XMRIG_URL = "https://github.com/xmrig/xmrig/releases/download/v6.21.1/xmrig-6.21.1-msvc-win64.zip"
+
+# Bridge script
+BRIDGE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws_bridge.py")
 
 # =============================================================================
 # TERMINAL UI HELPERS
@@ -78,307 +64,313 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def print_banner():
-    banner = f"""
-{Colors.CYAN}╔══════════════════════════════════════════════════════════════════════════════╗
-║{Colors.YELLOW}  ██╗  ██╗███╗   ███╗██████╗     ███╗   ███╗██╗███╗   ██╗███████╗██████╗      {Colors.CYAN}║
-║{Colors.YELLOW}  ╚██╗██╔╝████╗ ████║██╔══██╗    ████╗ ████║██║████╗  ██║██╔════╝██╔══██╗     {Colors.CYAN}║
-║{Colors.YELLOW}   ╚███╔╝ ██╔████╔██║██████╔╝    ██╔████╔██║██║██╔██╗ ██║█████╗  ██████╔╝     {Colors.CYAN}║
-║{Colors.YELLOW}   ██╔██╗ ██║╚██╔╝██║██╔══██╗    ██║╚██╔╝██║██║██║╚██╗██║██╔══╝  ██╔══██╗     {Colors.CYAN}║
-║{Colors.YELLOW}  ██╔╝ ██╗██║ ╚═╝ ██║██║  ██║    ██║ ╚═╝ ██║██║██║ ╚████║███████╗██║  ██║     {Colors.CYAN}║
-║{Colors.YELLOW}  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝     {Colors.CYAN}║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║{Colors.WHITE}  RandomX Windows Miner v{CLIENT_VERSION} (Full Power Mode)                           {Colors.CYAN}║
-║{Colors.GREEN}  Pool: MoneroOcean                                                            {Colors.CYAN}║
-╚══════════════════════════════════════════════════════════════════════════════╝{Colors.RESET}
-"""
-    print(banner)
+    clear_screen()
+    print(f"{Colors.CYAN}╔══════════════════════════════════════════════════════════════════════════════╗{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}  ██╗  ██╗███╗   ███╗██████╗     ███╗   ███╗██╗███╗   ██╗███████╗██████╗      {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}  ╚██╗██╔╝████╗ ████║██╔══██╗    ████╗ ████║██║████╗  ██║██╔════╝██╔══██╗     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}   ╚███╔╝ ██╔████╔██║██████╔╝    ██╔████╔██║██║██╔██╗ ██║█████╗  ██████╔╝     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}   ██╔██╗ ██║╚██╔╝██║██╔══██╗    ██║╚██╔╝██║██║██║╚██╗██║██╔══╝  ██╔══██╗     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}  ██╔╝ ██╗██║ ╚═╝ ██║██║  ██║    ██║ ╚═╝ ██║██║██║ ╚████║███████╗██║  ██║     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.YELLOW}  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}╠══════════════════════════════════════════════════════════════════════════════╣{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.WHITE}  Windows Native Miner v{CLIENT_VERSION} - Connects via Proxy (Combined Mining)     {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.GREEN}  Proxy: {PROXY_HOST}:{PROXY_PORT}                            {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{Colors.RESET}")
+    print()
 
-def print_status(message, status="info"):
-    icons = {
-        "info": f"{Colors.BLUE}[i]",
-        "success": f"{Colors.GREEN}[+]",
-        "warning": f"{Colors.YELLOW}[!]",
-        "error": f"{Colors.RED}[x]",
-        "mining": f"{Colors.GREEN}[*]",
-    }
-    icon = icons.get(status, icons["info"])
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"{Colors.WHITE}[{timestamp}] {icon} {message}{Colors.RESET}")
+def log_info(msg):
+    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.BLUE}[i]{Colors.RESET} {msg}")
+
+def log_success(msg):
+    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.GREEN}[+]{Colors.RESET} {msg}")
+
+def log_warning(msg):
+    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.YELLOW}[!]{Colors.RESET} {msg}")
+
+def log_error(msg):
+    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.RED}[x]{Colors.RESET} {msg}")
+
+def log_hash(msg):
+    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.CYAN}[#]{Colors.RESET} {msg}")
+
+# =============================================================================
+# SYSTEM DETECTION
+# =============================================================================
+def get_cpu_info():
+    """Get CPU information"""
+    cores = os.cpu_count() or 4
+    try:
+        if platform.system() == "Windows":
+            import subprocess
+            result = subprocess.run(['wmic', 'cpu', 'get', 'name'], capture_output=True, text=True)
+            name = result.stdout.strip().split('\n')[-1].strip()
+        else:
+            name = platform.processor() or "Unknown"
+    except:
+        name = platform.processor() or "Unknown CPU"
+    return cores, name
+
+def get_cpu_temp():
+    """Get CPU temperature (Windows)"""
+    try:
+        # Try WMI (requires admin)
+        import subprocess
+        result = subprocess.run(
+            ['powershell', '-Command', 
+             'Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" | Select-Object -ExpandProperty CurrentTemperature'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # WMI returns temp in tenths of Kelvin
+            temp_kelvin = float(result.stdout.strip().split('\n')[0]) / 10
+            temp_celsius = temp_kelvin - 273.15
+            return temp_celsius
+    except:
+        pass
+    
+    # Can't read temp
+    return None
 
 # =============================================================================
 # CONNECTION CHECK
 # =============================================================================
 def check_connection():
-    """Check connection quality before mining"""
-    print_status("Checking connection quality...", "info")
+    """Check if we can connect to the proxy server"""
+    log_info("Checking connection to proxy server...")
     
-    # Check 1: Internet connectivity
+    # First check internet connectivity
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=5)
-        print_status("Internet: Connected", "success")
-    except OSError:
-        print_status("Internet: No connection!", "error")
-        return False
-    
-    # Check 2: Pool connectivity
-    try:
-        host, port = POOL_URL.split(":")
-        socket.create_connection((host, int(port)), timeout=10)
-        print_status(f"Pool ({host}): Reachable", "success")
-    except Exception as e:
-        print_status(f"Pool: Unreachable - {e}", "error")
-        return False
-    
-    # Check 3: Latency test
-    try:
-        host, port = POOL_URL.split(":")
-        start = time.time()
-        s = socket.create_connection((host, int(port)), timeout=10)
-        s.close()
-        latency = (time.time() - start) * 1000
-        if latency < 100:
-            print_status(f"Latency: {latency:.0f}ms (Excellent)", "success")
-        elif latency < 250:
-            print_status(f"Latency: {latency:.0f}ms (Good)", "success")
-        elif latency < 500:
-            print_status(f"Latency: {latency:.0f}ms (Fair)", "warning")
-        else:
-            print_status(f"Latency: {latency:.0f}ms (Poor - may cause stale shares)", "warning")
+        log_success("Internet: Connected")
     except:
-        pass
+        log_error("Internet: No connection")
+        return False
     
-    print_status("Connection check passed!", "success")
+    # Check proxy server (HTTP port first)
+    try:
+        conn = socket.create_connection((PROXY_HOST, 443), timeout=10)
+        conn.close()
+        log_success(f"Proxy Server ({PROXY_HOST}): Reachable")
+    except:
+        log_warning(f"Proxy Server: Cannot verify HTTPS (this is normal)")
+    
+    # Note: Cloud deployments may not expose TCP port 3333
+    # XMRig will fall back to stratum over TLS if available
+    
     return True
 
 # =============================================================================
-# CPU TEMPERATURE MONITORING (Windows)
-# =============================================================================
-def get_cpu_temp():
-    """Get CPU temperature on Windows"""
-    # Try WMI
-    try:
-        import wmi
-        w = wmi.WMI(namespace="root\\wmi")
-        temp_info = w.MSAcpi_ThermalZoneTemperature()[0]
-        temp_kelvin = temp_info.CurrentTemperature
-        temp_celsius = (temp_kelvin / 10.0) - 273.15
-        return temp_celsius
-    except:
-        pass
-    
-    # Try OpenHardwareMonitor
-    try:
-        import wmi
-        w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
-        sensors = w.Sensor()
-        for sensor in sensors:
-            if sensor.SensorType == 'Temperature' and 'CPU' in sensor.Name:
-                return float(sensor.Value)
-    except:
-        pass
-    
-    return None
-
-class TempMonitor(threading.Thread):
-    """Background thread to monitor CPU temperature"""
-    
-    def __init__(self, miner):
-        super().__init__(daemon=True)
-        self.miner = miner
-        self.running = True
-        self.current_temp = None
-        self.throttled = False
-        self.stopped_for_temp = False
-    
-    def run(self):
-        while self.running:
-            temp = get_cpu_temp()
-            if temp is not None:
-                self.current_temp = temp
-                
-                if temp >= TEMP_STOP and not self.stopped_for_temp:
-                    print_status(f"CPU TEMP CRITICAL: {temp:.1f}°C - STOPPING!", "error")
-                    self.stopped_for_temp = True
-                    self.miner.pause_for_temp()
-                elif temp >= TEMP_THROTTLE and not self.throttled and not self.stopped_for_temp:
-                    print_status(f"CPU TEMP HIGH: {temp:.1f}°C - Throttling...", "warning")
-                    self.throttled = True
-                elif temp <= TEMP_RESUME and self.stopped_for_temp:
-                    print_status(f"CPU TEMP OK: {temp:.1f}°C - Resuming...", "success")
-                    self.stopped_for_temp = False
-                    self.throttled = False
-                    self.miner.resume_from_temp()
-                elif temp < TEMP_THROTTLE - 5 and self.throttled:
-                    self.throttled = False
-            
-            time.sleep(5)
-    
-    def stop(self):
-        self.running = False
-
-# =============================================================================
-# XMRIG INSTALLATION
+# XMRIG MANAGEMENT
 # =============================================================================
 def download_xmrig():
-    """Download and extract XMRig for Windows"""
-    print_status("XMRig not found. Downloading...", "info")
+    """Download XMRig if not present"""
+    if os.path.exists(XMRIG_EXE):
+        log_success("XMRig already installed")
+        return True
     
-    zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xmrig.zip")
+    log_info("Downloading XMRig 6.21.1...")
     
     try:
-        print_status(f"Downloading XMRig...", "info")
-        urllib.request.urlretrieve(XMRIG_URL, zip_path)
-        print_status("Download complete!", "success")
+        os.makedirs(XMRIG_DIR, exist_ok=True)
+        zip_path = os.path.join(XMRIG_DIR, "xmrig.zip")
         
-        print_status("Extracting...", "info")
+        # Download with progress
+        def report_progress(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                percent = min(100, downloaded * 100 // total_size)
+                print(f"\r{Colors.BLUE}[i]{Colors.RESET} Downloading: {percent}%", end='', flush=True)
+        
+        urllib.request.urlretrieve(XMRIG_URL, zip_path, report_progress)
+        print()
+        
+        log_info("Extracting XMRig...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            root_folder = zip_ref.namelist()[0].split('/')[0]
-            zip_ref.extractall(os.path.dirname(os.path.abspath(__file__)))
+            zip_ref.extractall(XMRIG_DIR)
         
-        extracted_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), root_folder)
-        if os.path.exists(XMRIG_DIR):
-            shutil.rmtree(XMRIG_DIR)
-        os.rename(extracted_dir, XMRIG_DIR)
+        # Move files from subdirectory
+        subdirs = [d for d in os.listdir(XMRIG_DIR) if os.path.isdir(os.path.join(XMRIG_DIR, d))]
+        if subdirs:
+            subdir = os.path.join(XMRIG_DIR, subdirs[0])
+            for f in os.listdir(subdir):
+                src = os.path.join(subdir, f)
+                dst = os.path.join(XMRIG_DIR, f)
+                if not os.path.exists(dst):
+                    os.rename(src, dst)
         
         os.remove(zip_path)
         
-        print_status("XMRig installed successfully!", "success")
-        return True
-        
+        if os.path.exists(XMRIG_EXE):
+            log_success("XMRig installed successfully!")
+            return True
+        else:
+            log_error("XMRig executable not found after extraction")
+            return False
+            
     except Exception as e:
-        print_status(f"Failed to download XMRig: {e}", "error")
+        log_error(f"Failed to download XMRig: {e}")
         return False
 
-def check_xmrig():
-    """Check if XMRig is installed"""
-    if os.path.exists(XMRIG_EXE):
-        return True
-    return download_xmrig()
-
 # =============================================================================
-# MINING
+# MINER PROCESS
 # =============================================================================
-class XMRigMiner:
+class MinerProcess:
     def __init__(self):
         self.process = None
-        self.shares_accepted = 0
-        self.shares_rejected = 0
+        self.bridge_process = None
         self.running = False
+        self.hashrate = 0
+        self.accepted = 0
+        self.rejected = 0
+        self.throttled = False
         self.paused = False
-        self.temp_monitor = None
+        self.cores, self.cpu_name = get_cpu_info()
+        self.threads = self.cores  # Full power
     
-    def pause_for_temp(self):
-        """Temporarily stop due to temperature"""
-        if self.process and self.running:
-            self.paused = True
-            self.process.terminate()
-            self.process.wait(timeout=5)
-            self.process = None
-            print_status("Mining paused due to temperature", "warning")
-    
-    def resume_from_temp(self):
-        """Resume after temperature dropped"""
-        if self.paused and not self.running:
-            print_status("Resuming mining...", "info")
-            self.paused = False
-            self._start_xmrig()
-    
-    def _start_xmrig(self):
-        """Internal method to start XMRig process"""
-        cmd = [
-            XMRIG_EXE,
-            "-o", POOL_URL,
-            "-u", WALLET,
-            "-p", WORKER_NAME,
-            "-a", ALGO,
-            "-k",
-            "--donate-level=1",
-            "--print-time=5"
-        ]
-        
-        self.process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1
-        )
-        self.running = True
-    
-    def start(self):
-        """Start XMRig"""
-        if not check_xmrig():
-            print_status("Cannot start - XMRig not available", "error")
+    def start_bridge(self):
+        """Start the WebSocket-to-Stratum bridge"""
+        if not os.path.exists(BRIDGE_SCRIPT):
+            log_error("Bridge script not found: ws_bridge.py")
             return False
         
-        print_status("Starting XMRig miner at FULL POWER...", "mining")
-        print_status(f"Using all {os.cpu_count()} CPU cores", "info")
-        
+        log_info("Starting WebSocket bridge...")
         try:
-            self._start_xmrig()
+            self.bridge_process = subprocess.Popen(
+                [sys.executable, BRIDGE_SCRIPT],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
             
-            # Start temp monitor
-            self.temp_monitor = TempMonitor(self)
-            self.temp_monitor.start()
+            # Start bridge output reader
+            threading.Thread(target=self._read_bridge_output, daemon=True).start()
             
-            # Read output
-            self.read_output()
+            # Wait for bridge to start
+            time.sleep(3)
+            log_success("WebSocket bridge started!")
+            return True
             
         except Exception as e:
-            print_status(f"Failed to start XMRig: {e}", "error")
+            log_error(f"Failed to start bridge: {e}")
             return False
-        
-        return True
     
-    def read_output(self):
-        """Read and display XMRig output with colors"""
+    def _read_bridge_output(self):
+        """Read and display bridge output"""
         try:
-            while self.running or self.paused:
-                if self.process and self.process.stdout:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        if self.paused:
-                            time.sleep(1)
-                            continue
-                        break
-                    
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    # Colorize output
-                    if "accepted" in line.lower():
-                        print(f"{Colors.GREEN}{line}{Colors.RESET}")
-                        self.shares_accepted += 1
-                    elif "rejected" in line.lower():
-                        print(f"{Colors.RED}{line}{Colors.RESET}")
-                        self.shares_rejected += 1
-                    elif "speed" in line.lower() or "h/s" in line.lower():
-                        print(f"{Colors.CYAN}{line}{Colors.RESET}")
-                    elif "error" in line.lower():
-                        print(f"{Colors.RED}{line}{Colors.RESET}")
-                    elif "new job" in line.lower():
-                        print(f"{Colors.YELLOW}{line}{Colors.RESET}")
-                    elif "block" in line.lower():
-                        print(f"{Colors.GREEN}{Colors.BOLD}*** {line} ***{Colors.RESET}")
+            for line in self.bridge_process.stdout:
+                line = line.strip()
+                if line:
+                    if "error" in line.lower():
+                        log_error(f"[Bridge] {line}")
+                    elif "connected" in line.lower() or "authenticated" in line.lower():
+                        log_success(f"[Bridge] {line}")
                     else:
-                        print(line)
-                else:
-                    time.sleep(0.5)
+                        log_info(f"[Bridge] {line}")
+        except:
+            pass
+        
+    def start(self):
+        """Start XMRig connected to local bridge"""
+        if self.running:
+            return
+        
+        # First start the WebSocket bridge
+        if not self.bridge_process:
+            if not self.start_bridge():
+                log_error("Cannot start without bridge")
+                return False
+        
+        # Connect to local bridge
+        pool_url = f"stratum+tcp://{LOCAL_STRATUM_HOST}:{LOCAL_STRATUM_PORT}"
+        
+        cmd = [
+            XMRIG_EXE,
+            "-o", pool_url,
+            "-u", WORKER_NAME,
+            "-p", "x",
+            "-a", "rx/0",
+            "-t", str(self.threads),
+            "--no-color",
+            "--print-time", "10"
+        ]
+        
+        log_info(f"Starting XMRig with {self.threads} threads...")
+        log_info(f"Connecting to local bridge: {pool_url}")
+        
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            self.running = True
+            
+            # Start output reader thread
+            threading.Thread(target=self._read_output, daemon=True).start()
+            
+            log_success("XMRig started!")
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to start XMRig: {e}")
+            self.running = False
+            return False
+    
+    def _read_output(self):
+        """Read and parse XMRig output"""
+        try:
+            for line in self.process.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Parse hashrate
+                if "speed" in line.lower() and "h/s" in line.lower():
+                    try:
+                        # Format: "speed 10s/60s/15m 123.4 123.4 123.4 H/s"
+                        parts = line.split()
+                        for i, p in enumerate(parts):
+                            if p.lower() == "h/s" and i > 0:
+                                self.hashrate = float(parts[i-1])
+                                log_hash(f"Hashrate: {self.hashrate:.1f} H/s")
+                                break
+                    except:
+                        pass
+                
+                # Parse accepted shares
+                elif "accepted" in line.lower():
+                    self.accepted += 1
+                    log_success(f"Share accepted! Total: {self.accepted}")
+                
+                # Parse rejected shares
+                elif "rejected" in line.lower():
+                    self.rejected += 1
+                    log_warning(f"Share rejected. Total rejected: {self.rejected}")
+                
+                # Connection status
+                elif "use pool" in line.lower() or "connected" in line.lower():
+                    log_success("Connected to proxy server!")
+                
+                elif "connection" in line.lower() and ("error" in line.lower() or "failed" in line.lower()):
+                    log_error(f"Connection issue: {line}")
+                
+                # Other important messages
+                elif "error" in line.lower() or "warning" in line.lower():
+                    log_warning(line)
                     
-        except KeyboardInterrupt:
-            self.stop()
+        except Exception as e:
+            if self.running:
+                log_error(f"Output reader error: {e}")
+        finally:
+            self.running = False
     
     def stop(self):
-        """Stop XMRig"""
-        print_status("Stopping miner...", "warning")
-        self.running = False
-        self.paused = False
-        
-        if self.temp_monitor:
-            self.temp_monitor.stop()
-        
+        """Stop XMRig and bridge"""
         if self.process:
+            log_warning("Stopping XMRig...")
             self.process.terminate()
             try:
                 self.process.wait(timeout=5)
@@ -386,69 +378,153 @@ class XMRigMiner:
                 self.process.kill()
             self.process = None
         
-        print_status("Miner stopped.", "info")
+        if self.bridge_process:
+            log_warning("Stopping bridge...")
+            self.bridge_process.terminate()
+            try:
+                self.bridge_process.wait(timeout=3)
+            except:
+                self.bridge_process.kill()
+            self.bridge_process = None
+            
+        self.running = False
+        self.hashrate = 0
+    
+    def set_threads(self, threads):
+        """Change thread count (requires restart)"""
+        self.threads = max(1, min(threads, self.cores))
+        if self.running:
+            log_info(f"Restarting with {self.threads} threads...")
+            # Only restart XMRig, not the bridge
+            if self.process:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except:
+                    self.process.kill()
+                self.process = None
+            self.running = False
+            time.sleep(1)
+            self.start()
+
+# =============================================================================
+# TEMPERATURE MONITOR
+# =============================================================================
+class TempMonitor:
+    def __init__(self, miner):
+        self.miner = miner
+        self.running = False
+        
+    def start(self):
+        self.running = True
+        threading.Thread(target=self._monitor_loop, daemon=True).start()
+        
+    def stop(self):
+        self.running = False
+        
+    def _monitor_loop(self):
+        while self.running:
+            temp = get_cpu_temp()
+            
+            if temp is not None:
+                if temp >= TEMP_STOP:
+                    if not self.miner.paused:
+                        log_error(f"🔥 CPU TEMP: {temp:.0f}°C - STOPPING MINER!")
+                        self.miner.paused = True
+                        self.miner.stop()
+                        
+                elif temp >= TEMP_THROTTLE:
+                    if not self.miner.throttled:
+                        log_warning(f"⚠️  CPU TEMP: {temp:.0f}°C - Throttling to 50%")
+                        self.miner.throttled = True
+                        self.miner.set_threads(max(1, self.miner.cores // 2))
+                        
+                elif temp < TEMP_RESUME:
+                    if self.miner.paused:
+                        log_success(f"✓ CPU TEMP: {temp:.0f}°C - Resuming mining")
+                        self.miner.paused = False
+                        self.miner.start()
+                    elif self.miner.throttled:
+                        log_success(f"✓ CPU TEMP: {temp:.0f}°C - Restoring full power")
+                        self.miner.throttled = False
+                        self.miner.set_threads(self.miner.cores)
+            
+            time.sleep(10)
 
 # =============================================================================
 # MAIN
 # =============================================================================
 def main():
-    # Enable ANSI colors on Windows
-    if os.name == 'nt':
-        os.system('')
-    
-    clear_screen()
     print_banner()
     
-    print_status(f"Version: {CLIENT_VERSION} ({CLIENT_VERSION_DATE})", "info")
-    print_status(f"Platform: Windows x64", "info")
-    print_status(f"CPU Cores: {os.cpu_count()}", "info")
+    # System info
+    cores, cpu_name = get_cpu_info()
+    log_info(f"CPU: {cpu_name}")
+    log_info(f"Cores: {cores}")
+    log_info(f"Platform: {platform.system()} {platform.release()}")
     print()
     
-    # Connection check
+    # Check connection
     if not check_connection():
-        print_status("Connection check failed!", "error")
-        print_status("Please check your internet connection and try again.", "error")
+        log_error("Cannot connect to internet. Please check your connection.")
+        input("\nPress Enter to exit...")
+        sys.exit(1)
+    print()
+    
+    # Download XMRig if needed
+    if not download_xmrig():
+        log_error("Cannot proceed without XMRig")
+        input("\nPress Enter to exit...")
+        sys.exit(1)
+    print()
+    
+    # Check for websockets library
+    try:
+        import websockets
+    except ImportError:
+        log_warning("Installing websockets library...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "websockets"], check=True)
+        log_success("websockets installed!")
+    print()
+    
+    # Important note about proxy connection
+    print(f"{Colors.YELLOW}{'='*78}{Colors.RESET}")
+    print(f"{Colors.YELLOW}  ✓ This miner connects through the proxy server (WebSocket bridge){Colors.RESET}")
+    print(f"{Colors.YELLOW}  ✓ Your hashrate will be COMBINED with all other miners{Colors.RESET}")
+    print(f"{Colors.YELLOW}  ✓ You can be controlled from the Owner Panel{Colors.RESET}")
+    print(f"{Colors.YELLOW}{'='*78}{Colors.RESET}")
+    print()
+    
+    # Create miner
+    miner = MinerProcess()
+    
+    # Start temp monitor
+    temp_monitor = TempMonitor(miner)
+    temp_monitor.start()
+    
+    # Start mining
+    log_info("Starting miner (Full Power Mode)...")
+    if not miner.start():
+        log_error("Failed to start miner")
         input("\nPress Enter to exit...")
         sys.exit(1)
     
     print()
-    print_status(f"Wallet: {WALLET[:12]}...{WALLET[-8:]}", "info")
-    print_status(f"Pool: {POOL_URL}", "info")
-    print_status(f"Algorithm: {ALGO} (RandomX)", "info")
-    print_status(f"Mode: FULL POWER (all cores)", "mining")
+    log_success("Mining started! Press Ctrl+C to stop.")
     print()
     
-    # Temperature check
-    temp = get_cpu_temp()
-    if temp:
-        print_status(f"CPU Temperature: {temp:.1f}°C", "info")
-    else:
-        print_status("CPU Temperature: Not available (install WMI for monitoring)", "warning")
-    
-    print()
-    print(f"{Colors.YELLOW}{'='*78}{Colors.RESET}")
-    print(f"{Colors.YELLOW}  Press Ctrl+C to stop mining{Colors.RESET}")
-    print(f"{Colors.YELLOW}{'='*78}{Colors.RESET}")
-    print()
-    
-    # Start mining
-    miner = XMRigMiner()
-    
+    # Main loop
     try:
-        miner.start()
+        while True:
+            time.sleep(30)
+            if miner.running and miner.hashrate > 0:
+                log_hash(f"Status: {miner.hashrate:.1f} H/s | Accepted: {miner.accepted} | Rejected: {miner.rejected}")
     except KeyboardInterrupt:
-        pass
-    finally:
+        print()
+        log_warning("Stopping miner...")
+        temp_monitor.stop()
         miner.stop()
-    
-    print()
-    print(f"{Colors.CYAN}{'='*78}{Colors.RESET}")
-    print(f"{Colors.WHITE}  Session Statistics:{Colors.RESET}")
-    print(f"{Colors.GREEN}    Accepted Shares: {miner.shares_accepted}{Colors.RESET}")
-    print(f"{Colors.RED}    Rejected Shares: {miner.shares_rejected}{Colors.RESET}")
-    print(f"{Colors.CYAN}{'='*78}{Colors.RESET}")
-    
-    input("\nPress Enter to exit...")
+        log_info("Goodbye!")
 
 if __name__ == "__main__":
     main()

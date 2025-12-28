@@ -1597,7 +1597,7 @@ controlWss.on('connection', (ws, req) => {
           console.log(`[Control #${client.id}] Identified: ${client.userAgent}`);
         }
       }
-      // Handle info messages - update the matching miner data
+      // Handle info messages - update the matching miner data (from info socket - authoritative)
       else if (msg.type === 'info' && msg.params) {
         // Find miner with matching IP
         for (const [minerId, miner] of globalStats.activeMiners) {
@@ -1608,6 +1608,9 @@ controlWss.on('connection', (ws, req) => {
             if (msg.params.status) miner.status = msg.params.status;
             if (msg.params.hashrate !== undefined) miner.hashrate = msg.params.hashrate;
             miner.lastUpdate = Date.now();
+            // Mark that we have authoritative info from the info socket
+            miner.infoFromInfoSocket = true;
+            console.log(`[Info Socket] Updated Miner #${minerId}: ${miner.cores} cores, ${miner.threads} threads, ${miner.hashrate} H/s, status: ${miner.status}`);
             break;
           }
         }
@@ -1799,15 +1802,21 @@ wss.on('connection', (ws, req) => {
         activeMiner.lastUpdate = Date.now();
       }
       // Miner info report (cores, threads, status, hashrate)
+      // Skip if we have authoritative info from the info socket
       else if (msg.type === 'info' && activeMiner) {
-        if (msg.params.cores) activeMiner.cores = msg.params.cores;
-        if (msg.params.threads !== undefined) activeMiner.threads = msg.params.threads;
-        if (msg.params.throttle !== undefined) activeMiner.throttle = msg.params.throttle;
-        if (msg.params.status) activeMiner.status = msg.params.status;
-        if (msg.params.hashrate !== undefined) activeMiner.hashrate = msg.params.hashrate;
-        if (msg.params.totalHashes !== undefined) activeMiner.hashes = msg.params.totalHashes;
-        activeMiner.lastUpdate = Date.now();
-        console.log(`[${logId}] Info: ${activeMiner.cores} cores, ${activeMiner.threads} threads, ${activeMiner.hashrate} H/s, status: ${activeMiner.status}`);
+        // If we have authoritative info from info socket, ignore miner socket info
+        if (activeMiner.infoFromInfoSocket) {
+          console.log(`[${logId}] Info ignored (using info socket data): ${msg.params.cores || '?'} cores, ${msg.params.threads || '?'} threads, ${msg.params.hashrate || 0} H/s`);
+        } else {
+          if (msg.params.cores) activeMiner.cores = msg.params.cores;
+          if (msg.params.threads !== undefined) activeMiner.threads = msg.params.threads;
+          if (msg.params.throttle !== undefined) activeMiner.throttle = msg.params.throttle;
+          if (msg.params.status) activeMiner.status = msg.params.status;
+          if (msg.params.hashrate !== undefined) activeMiner.hashrate = msg.params.hashrate;
+          if (msg.params.totalHashes !== undefined) activeMiner.hashes = msg.params.totalHashes;
+          activeMiner.lastUpdate = Date.now();
+          console.log(`[${logId}] Info: ${activeMiner.cores} cores, ${activeMiner.threads} threads, ${activeMiner.hashrate} H/s, status: ${activeMiner.status}`);
+        }
       }
       // Keep-alive ping
       else if (msg.type === 'ping') {

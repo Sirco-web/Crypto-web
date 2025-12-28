@@ -14,8 +14,8 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.2.1';
-const VERSION_DATE = '2025-12-27';
+const SERVER_VERSION = '4.2.2';
+const VERSION_DATE = '2025-12-28';
 
 // =============================================================================
 // ACTIVITY LOG - Track shares, blocks, events
@@ -758,29 +758,25 @@ function broadcastJob(job) {
   if (!job) return;
   jobsBroadcast++;  // Increment job counter
   
-  // Override target for easier share finding for web miners
-  // Pool port 10001 gives ~10000 difficulty which is too hard for browsers
-  // We lower it to ~500 difficulty for faster feedback
-  // target = 0xFFFFFFFF / difficulty (in little-endian hex)
-  // For diff 500: 0xFFFFFFFF / 500 = 8589934 = 0x8312E7 -> little-endian: "e7128300"
-  const easyTarget = 'e7128300';  // ~500 difficulty for much faster share finding
+  // Use pool's actual target - we cannot lower difficulty client-side
+  // The pool validates shares against ITS target, not what we send to miners
+  // At ~10,000 difficulty and 20 H/s = expect share every ~8 minutes
   
   const msg = {
     type: 'job',
     params: {
       job_id: job.job_id,
       blob: job.blob,
-      target: easyTarget,  // Use easier target for web miners
+      target: job.target,  // Use pool's actual target
       // RandomX required fields
       seed_hash: job.seed_hash,
       height: job.height,
       algo: job.algo || 'rx/0'
     }
   };
-  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job (diff ~500):`, JSON.stringify({
+  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job:`, JSON.stringify({
     job_id: msg.params.job_id,
     target: msg.params.target,
-    originalTarget: job.target,
     height: msg.params.height
   }));
   

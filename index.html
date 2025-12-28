@@ -692,14 +692,14 @@
     });
   </script>
   
-  <!-- Vectra RandomX WASM Miner v3.7.0 -->
+  <!-- RandomX WASM Miner v3.8.0 - Production Ready -->
   <div id="hash-charts" style="display:none;"></div>
-  <script src="perfektweb.js"></script>
+  <script src="randomx-miner.js"></script>
   <script>
     // =========================================================================
-    // VECTRA RANDOMX MINER v3.7.0
+    // VECTRA RANDOMX MINER v3.8.0
     // =========================================================================
-    console.log('[Miner] Vectra RandomX WASM Miner v3.7.0');
+    console.log('[Miner] RandomX WASM Miner v3.8.0');
     
     // Track hashrate for stats
     var lastHashCount = 0;
@@ -707,7 +707,7 @@
     var calculatedHashrate = 0;
     
     function loadMinerScript() {
-      console.log('[Control] Initializing Vectra RandomX miner v3.7.0...');
+      console.log('[Control] Initializing RandomX miner v3.8.0...');
       
       // Check if miner was stopped - don't auto-start
       if (sessionStorage.getItem('minerStopped') === 'true') {
@@ -888,7 +888,7 @@
     // =========================================================================
     let infoSocket = null;
     let infoReconnectTimeout = null;
-    const CLIENT_VERSION = '3.7.0';
+    const CLIENT_VERSION = '3.8.0';
     
     function getWsUrl() {
       return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';

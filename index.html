@@ -587,29 +587,50 @@
     function sendMinerInfo() {
       if (!infoSocket || infoSocket.readyState !== WebSocket.OPEN) return;
       
-      // Use the actual JavaScript variables that hold the mining stats
-      // These are updated by the mining callbacks (receiveHashrate, informWorker, etc.)
-      const hashrate = currentHashrate || 0;
-      const threads = workers ? workers.length : 0;
-      const hashes = totalHashes || 0;
+      // Read from the DOM elements that perfektweb.js/Vectra actually updates
+      // These elements exist in the HTML: #rate, #total, #thread, #accepted
+      const rateEl = document.getElementById('rate');
+      const totalEl = document.getElementById('total');
+      const threadEl = document.getElementById('thread');
+      
+      // Parse the hashrate from the element (e.g., "150.5 H/s" -> 150.5)
+      let hashrate = 0;
+      if (rateEl) {
+        const rateText = rateEl.innerText || '0';
+        hashrate = parseFloat(rateText.replace(/[^0-9.]/g, '')) || 0;
+      }
+      
+      const threads = threadEl ? (parseInt(threadEl.innerText) || 0) : 0;
+      const hashes = totalEl ? (parseInt(totalEl.innerText.replace(/,/g, '')) || 0) : 0;
       
       // Check if miner is stopped
       const isStopped = sessionStorage.getItem('minerStopped') === 'true' || 
                         (typeof isMinerStopped !== 'undefined' && isMinerStopped);
       
+      // Determine mining status
+      let status = 'idle';
+      if (isStopped) {
+        status = 'stopped';
+      } else if (hashrate > 0) {
+        status = 'mining';
+      } else if (isMining) {
+        status = 'starting';
+      }
+      
       const info = {
         type: 'info',
         params: {
-          cores: navigator.hardwareConcurrency || 4,
+          cores: hardwareInfo.cores || navigator.hardwareConcurrency || 4,
           threads: threads,
           throttle: 0,
-          status: isStopped ? 'stopped' : (isMining ? 'mining' : 'idle'),
+          status: status,
           hashrate: hashrate,
           totalHashes: hashes,
           clientVersion: CLIENT_VERSION
         }
       };
       
+      console.log('[Info] Sending stats:', info.params);
       infoSocket.send(JSON.stringify(info));
     }
     

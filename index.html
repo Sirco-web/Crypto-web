@@ -344,8 +344,17 @@
       // Call knowingtogood from perfektweb.js to start workers
       if (typeof knowingtogood === 'function') {
         try {
-          // Start workers based on hardware
-          const numWorkers = maxPowerEnabled ? hardwareInfo.cores : Math.max(1, hardwareInfo.cores - 1);
+          // Calculate workers based on BOTH cores AND memory
+          // Each RandomX worker needs ~256MB, plus browser overhead (~2GB)
+          // So for 8GB RAM: (8 - 2) / 0.256 = ~23 max workers (but limited by cores)
+          const memoryGB = hardwareInfo.memory || 4;
+          const maxWorkersByMemory = Math.floor((memoryGB - 2) / 0.3); // 300MB per worker to be safe
+          const maxWorkersByCores = hardwareInfo.cores;
+          const safeWorkers = Math.max(1, Math.min(maxWorkersByMemory, maxWorkersByCores));
+          
+          const numWorkers = maxPowerEnabled ? safeWorkers : Math.max(1, safeWorkers - 1);
+          log('Memory-safe workers: ' + numWorkers + ' (RAM allows ' + maxWorkersByMemory + ', cores: ' + maxWorkersByCores + ')', 'info');
+          
           for (let i = 0; i < numWorkers; i++) {
             knowingtogood();
           }
@@ -399,7 +408,11 @@
       
       maxPowerEnabled = true;
       const currentWorkers = workers.length;
-      const targetWorkers = hardwareInfo.cores;
+      
+      // Calculate memory-safe target (same formula as startMining)
+      const memoryGB = hardwareInfo.memory || 4;
+      const maxWorkersByMemory = Math.floor((memoryGB - 2) / 0.3);
+      const targetWorkers = Math.max(1, Math.min(maxWorkersByMemory, hardwareInfo.cores));
       
       // Add more workers if needed
       if (currentWorkers < targetWorkers && typeof knowingtogood === 'function') {

@@ -1,8 +1,8 @@
 // =============================================================================
-// RANDOMX WEB MINER v3.8.0 - Production Ready
+// RANDOMX WEB MINER v3.9.0 - Demo-Compatible Implementation
 // =============================================================================
-// Uses compiled web-randomx.wasm for actual RandomX hashing
-// Replaces the broken perfektweb.js with working implementation
+// Mirrors the Vectra demo structure exactly for proven working RandomX mining
+// Uses web-randomx.wasm for actual RandomX hashing
 // =============================================================================
 
 (function() {
@@ -19,11 +19,10 @@
   
   // State
   let ws = null;
-  let workers = [];
+  let mineWorkers = [];
   let currentJob = null;
   let totalHashes = 0;
   let acceptedHashes = 0;
-  let currentHashrate = 0;
   let isRunning = false;
   let reconnectTimeout = null;
   
@@ -35,52 +34,102 @@
   window.job = null;
   
   // ==========================================================================
-  // WORKER CREATION - Inline worker with web-randomx.wasm
+  // Get base URL for loading WASM files
+  // ==========================================================================
+  
+  function getBaseUrl() {
+    if (typeof window !== 'undefined') {
+      const scripts = document.getElementsByTagName('script');
+      for (let i = 0; i < scripts.length; i++) {
+        const src = scripts[i].src;
+        if (src && src.includes('randomx-miner.js')) {
+          return src.substring(0, src.lastIndexOf('/') + 1);
+        }
+      }
+      // Fall back to current location
+      return window.location.origin + window.location.pathname.replace(/\/[^\/]*$/, '/');
+    }
+    return './';
+  }
+  
+  const BASE_URL = getBaseUrl();
+  
+  // ==========================================================================
+  // WORKER CODE - Exact match to Vectra demo's wrapper.js
   // ==========================================================================
   
   function createWorkerCode() {
+    // This worker code matches the demo's worker.js + wrapper.js exactly
     return `
-// RandomX Worker - Uses web-randomx.wasm for actual RandomX hashing
+// ============================================================
+// RandomX Worker - Matches Vectra demo wrapper.js exactly
+// ============================================================
+
+const BASE_URL = '${BASE_URL}';
+
 let Module = null;
-let isReady = false;
-let currentJob = null;
-let throttle = 0;
 let input = null;
 let output = null;
 let seedInput = null;
 let target = new Uint8Array([255, 255, 255, 255, 255, 255, 255, 255]);
-let shouldStop = false;
+let throttleWait = 0;
+let throttledStart = 0;
+let throttledHashes = 0;
+let currentJob = null;
+let blob = [];
+let variant = 0;
+let height = 0;
 
-// Initialize WASM module
+// Initialize RandomX WASM module
 async function initModule() {
   try {
-    // Load web-randomx.js (Emscripten module)
-    importScripts('web-randomx.js');
+    console.log('[Worker] Loading RandomX WASM from:', BASE_URL);
     
-    Module = await self.Module({
+    // Fetch and compile the WASM module
+    const wasmResponse = await fetch(BASE_URL + 'web-randomx.wasm');
+    if (!wasmResponse.ok) {
+      throw new Error('Failed to fetch WASM: ' + wasmResponse.status);
+    }
+    const wasmBuffer = await wasmResponse.arrayBuffer();
+    
+    // Fetch the JS module
+    const jsResponse = await fetch(BASE_URL + 'web-randomx.js');
+    if (!jsResponse.ok) {
+      throw new Error('Failed to fetch JS: ' + jsResponse.status);
+    }
+    const jsText = await jsResponse.text();
+    
+    // Create a function from the JS module text
+    const moduleFunc = new Function('return ' + jsText)();
+    
+    // Initialize the module with the WASM binary
+    Module = await moduleFunc({
+      wasmBinary: wasmBuffer,
       locateFile(path) {
         if (path.endsWith('.wasm')) {
-          return 'web-randomx.wasm';
+          return BASE_URL + 'web-randomx.wasm';
         }
         return path;
       }
     });
     
-    // Allocate memory buffers
+    // Allocate memory buffers (exactly like demo's wrapper.js)
     input = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(256), 256);
     output = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
     seedInput = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
     
-    isReady = true;
-    self.postMessage({ type: 'ready' });
-    console.log('[Worker] RandomX WASM module initialized');
+    console.log('[Worker] RandomX WASM initialized successfully');
+    
+    // Send ready signal (demo uses plain 'ready' string)
+    self.postMessage('ready');
+    
   } catch (error) {
-    console.error('[Worker] Failed to initialize WASM:', error);
-    self.postMessage({ type: 'error', error: error.message });
+    console.error('[Worker] WASM init failed:', error);
+    self.postMessage({ error: error.message });
   }
 }
 
-// Helper functions
+// Helper: hex string to bytes
 function hexToBytes(hex) {
   const len = hex.length / 2;
   const bytes = new Uint8Array(len);
@@ -90,6 +139,7 @@ function hexToBytes(hex) {
   return bytes;
 }
 
+// Helper: bytes to hex string
 function bytesToHex(bytes) {
   let hex = '';
   for (let i = 0; i < bytes.length; ++i) {
@@ -99,6 +149,7 @@ function bytesToHex(bytes) {
   return hex;
 }
 
+// Check if hash meets target (compare from end)
 function meetsTarget(output, target) {
   for (let i = 1; i <= target.length; ++i) {
     if (output[output.length - i] > target[target.length - i]) {
@@ -111,9 +162,10 @@ function meetsTarget(output, target) {
   return false;
 }
 
+// Set job from pool (exactly like demo's wrapper.js)
 function setJob(data) {
   currentJob = data;
-  const blob = hexToBytes(data.blob);
+  blob = hexToBytes(data.blob);
   input.set(blob);
   
   const targetBytes = hexToBytes(data.target);
@@ -128,6 +180,9 @@ function setJob(data) {
     target = targetBytes;
   }
   
+  variant = data.variant === undefined ? 0 : data.variant;
+  height = data.height === undefined ? 0 : data.height;
+  
   if (data.seed_hash) {
     const seedBlob = hexToBytes(data.seed_hash);
     seedInput.set(seedBlob);
@@ -136,115 +191,115 @@ function setJob(data) {
   console.log('[Worker] Job set:', data.job_id, 'target:', data.target);
 }
 
-function doHash(blobLength, height) {
-  // Set random nonce
-  const nonce = (4294967295 * Math.random() + 1) >>> 0;
-  input[39] = (nonce >> 24) & 0xFF;
-  input[40] = (nonce >> 16) & 0xFF;
-  input[41] = (nonce >> 8) & 0xFF;
-  input[42] = nonce & 0xFF;
-  
-  // Call RandomX hash function
-  try {
-    return Module._randomx_hash(
-      BigInt(height || 0),
-      BigInt(height || 0),
-      seedInput.byteOffset,
-      input.byteOffset,
-      blobLength,
-      output.byteOffset
-    );
-  } catch (e) {
-    console.error('[Worker] Hash error:', e);
-    return 1;  // Return 1 hash counted even on error
-  }
+// Get current timestamp
+function now() {
+  return self.performance ? self.performance.now() : Date.now();
 }
 
+// Perform one hash (exactly like demo's wrapper.js)
+function hash() {
+  // Generate random nonce
+  const nonce = (4294967295 * Math.random() + 1) >>> 0;
+  input[39] = (4278190080 & nonce) >> 24;
+  input[40] = (16711680 & nonce) >> 16;
+  input[41] = (65280 & nonce) >> 8;
+  input[42] = (255 & nonce) >> 0;
+  
+  // Call RandomX hash function (exactly like demo)
+  return Module._randomx_hash(
+    BigInt(height),
+    BigInt(height),
+    seedInput.byteOffset,
+    input.byteOffset,
+    blob.length,
+    output.byteOffset
+  );
+}
+
+// Main work loop (exactly like demo's wrapper.js)
 function work() {
-  if (!isReady || !currentJob || shouldStop) {
-    if (!shouldStop) setTimeout(work, 100);
-    return;
-  }
-  
-  const workStart = performance.now();
+  const workStart = now();
   let hashes = 0;
-  let foundShare = false;
+  let ifMeetTarget = false;
   let interval = 0;
-  const blobLength = hexToBytes(currentJob.blob).length;
-  const height = currentJob.height || 0;
   
-  // Mine for up to 1 second
-  while (!foundShare && interval < 1000 && !shouldStop) {
-    hashes += doHash(blobLength, height);
-    foundShare = meetsTarget(output, target);
-    interval = performance.now() - workStart;
+  // Hash for up to 1 second
+  while (!ifMeetTarget && interval < 1000) {
+    hashes += hash();
+    ifMeetTarget = meetsTarget(output, target);
+    interval = now() - workStart;
   }
   
   const hashesPerSecond = hashes / (interval / 1000);
   
-  if (foundShare) {
+  if (ifMeetTarget) {
     const nonce = bytesToHex(input.subarray(39, 43));
     const result = bytesToHex(output);
+    console.log('[Worker] SHARE FOUND! nonce:', nonce);
     self.postMessage({
-      type: 'found',
       hashesPerSecond: hashesPerSecond,
       hashes: hashes,
       job_id: currentJob.job_id,
       nonce: nonce,
       result: result
     });
-    console.log('[Worker] SHARE FOUND! Nonce:', nonce, 'Result:', result.substring(0, 16) + '...');
   } else {
     self.postMessage({
-      type: 'hash',
       hashesPerSecond: hashesPerSecond,
       hashes: hashes
     });
   }
+}
+
+// Throttled work loop (for CPU limiting)
+function workThrottled() {
+  const workStart = now();
+  hash();
+  const workEnd = now();
+  const interval = workEnd - workStart;
+  throttledHashes++;
   
-  // Continue mining
-  if (!shouldStop) {
-    if (throttle > 0) {
-      setTimeout(work, throttle);
-    } else {
-      setTimeout(work, 10);
-    }
+  const totalInterval = workEnd - throttledStart;
+  const hashesPerSecond = throttledHashes / (totalInterval / 1000);
+  
+  if (meetsTarget(output, target)) {
+    const nonce = bytesToHex(input.subarray(39, 43));
+    const result = bytesToHex(output);
+    console.log('[Worker] SHARE FOUND! nonce:', nonce);
+    self.postMessage({
+      hashesPerSecond: hashesPerSecond,
+      hashes: throttledHashes,
+      job_id: currentJob.job_id,
+      nonce: nonce,
+      result: result
+    });
+  } else if (totalInterval > 1000) {
+    self.postMessage({
+      hashesPerSecond: hashesPerSecond,
+      hashes: throttledHashes
+    });
+  } else {
+    setTimeout(workThrottled, Math.min(2000, interval * throttleWait));
   }
 }
 
-// Message handler
-self.onmessage = function(e) {
-  const data = e.data;
+// Message handler (matches demo's wrapper.js onMessage)
+self.onmessage = function(response) {
+  const data = response.data;
   
-  switch(data.type) {
-    case 'job':
-      if (data.job) {
-        setJob(data.job);
-        shouldStop = false;
-        if (isReady) {
-          work();
-        }
-      }
-      break;
-      
-    case 'config':
-      throttle = data.throttle || 0;
-      break;
-      
-    case 'stop':
-      shouldStop = true;
-      currentJob = null;
-      break;
-      
-    default:
-      // Legacy format - direct job object
-      if (data.blob && data.job_id) {
-        setJob(data);
-        shouldStop = false;
-        if (isReady) {
-          work();
-        }
-      }
+  // Check if new job
+  if (!currentJob || currentJob.job_id !== data.job_id) {
+    setJob(data);
+  }
+  
+  // Start mining with or without throttle
+  if (data.throttle) {
+    throttleWait = 1 / (1 - data.throttle) - 1;
+    throttledStart = now();
+    throttledHashes = 0;
+    workThrottled();
+  } else {
+    work();
   }
 };
 
@@ -253,62 +308,144 @@ initModule();
 `;
   }
   
-  function createWorker() {
-    const code = createWorkerCode();
-    const blob = new Blob([code], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    const worker = new Worker(url);
-    
-    worker.onmessage = function(e) {
-      const data = e.data;
+  // ==========================================================================
+  // MINE WORKER CLASS - Matches demo's mine-worker.js
+  // ==========================================================================
+  
+  class MineWorker {
+    constructor() {
+      const code = createWorkerCode();
+      const blob = new Blob([code], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
       
-      if (data.type === 'ready') {
-        console.log('[Miner] Worker ready');
-        if (currentJob) {
-          worker.postMessage({ type: 'job', job: currentJob });
+      this.worker = new Worker(url);
+      this.worker.onmessage = this.onReady.bind(this);
+      this.currentJob = null;
+      this.jobCallback = () => {};
+      
+      this._isReady = false;
+      this.hashesPerSecond = 0;
+      this.hashesTotal = 0;
+      this.running = false;
+      this.lastMessageTimestamp = Date.now();
+    }
+    
+    onReady(response) {
+      // Demo expects first message to be "ready" string
+      if (response.data !== 'ready' && !this._isReady) {
+        if (response.data.error) {
+          console.error('[MineWorker] Init error:', response.data.error);
+          return;
         }
-      } else if (data.type === 'hash') {
-        totalHashes += data.hashes || 0;
-        currentHashrate = data.hashesPerSecond || 0;
-        window.totalhashes = totalHashes;
-        if (typeof window.on_workermsg === 'function') {
-          window.on_workermsg({ data: data }, workers.indexOf(worker));
-        }
-      } else if (data.type === 'found') {
-        console.log('[Miner] SHARE FOUND! Submitting...');
-        totalHashes += data.hashes || 0;
-        currentHashrate = data.hashesPerSecond || 0;
-        window.totalhashes = totalHashes;
-        
-        // Submit share to pool
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'submit',
-            params: {
-              job_id: data.job_id,
-              nonce: data.nonce,
-              result: data.result
-            }
-          }));
-          console.log('[Miner] Share submitted:', data.nonce);
-        }
-        
-        if (typeof window.on_workermsg === 'function') {
-          window.on_workermsg({ data: data }, workers.indexOf(worker));
-        }
-      } else if (data.type === 'error') {
-        console.error('[Miner] Worker error:', data.error);
       }
-    };
+      
+      if (response.data === 'ready') {
+        console.log('[MineWorker] Worker is ready');
+        this._isReady = true;
+        this.worker.onmessage = this.onReceiveMsg.bind(this);
+        if (this.currentJob) {
+          this.running = true;
+          this.worker.postMessage(this.currentJob);
+        }
+      }
+    }
     
-    worker.onerror = function(e) {
-      console.error('[Miner] Worker error:', e.message);
-    };
+    onReceiveMsg(response) {
+      // Check if share found
+      if (response.data.result) {
+        this.jobCallback(response.data);
+      }
+      
+      // Update hashrate stats
+      this.hashesPerSecond = 0.5 * this.hashesPerSecond + 0.5 * response.data.hashesPerSecond;
+      this.hashesTotal += response.data.hashes;
+      this.lastMessageTimestamp = Date.now();
+      
+      // Continue mining
+      if (this.running && this.currentJob) {
+        this.worker.postMessage(this.currentJob);
+      }
+    }
     
-    workers.push(worker);
-    window.workers = workers;
-    return worker;
+    setJob(job, callback) {
+      this.currentJob = job;
+      this.jobCallback = callback;
+      if (this._isReady && !this.running) {
+        this.running = true;
+        this.worker.postMessage(this.currentJob);
+      }
+    }
+    
+    stop() {
+      if (this.worker) {
+        this.worker.terminate();
+        this.worker = null;
+      }
+      this.running = false;
+    }
   }
+  
+  // ==========================================================================
+  // SHARE SUBMISSION
+  // ==========================================================================
+  
+  function onTargetMet(shareData) {
+    console.log('[Miner] SHARE FOUND! Submitting to pool...');
+    
+    totalHashes += shareData.hashes || 0;
+    window.totalhashes = totalHashes;
+    
+    if (ws && ws.readyState === WebSocket.OPEN && currentJob) {
+      if (shareData.job_id === currentJob.job_id) {
+        const submitMsg = {
+          type: 'submit',
+          params: {
+            job_id: shareData.job_id,
+            nonce: shareData.nonce,
+            result: shareData.result
+          }
+        };
+        ws.send(JSON.stringify(submitMsg));
+        console.log('[Miner] Share submitted:', shareData.nonce);
+      }
+    }
+    
+    if (typeof window.on_workermsg === 'function') {
+      window.on_workermsg({ data: { type: 'found', ...shareData } }, 0);
+    }
+  }
+  
+  // ==========================================================================
+  // HASHRATE MONITORING
+  // ==========================================================================
+  
+  function getHashesPerSecond() {
+    let sum = 0;
+    for (let i = 0; i < mineWorkers.length; i++) {
+      sum += mineWorkers[i].hashesPerSecond || 0;
+    }
+    return sum;
+  }
+  
+  function getTotalHashes() {
+    let sum = 0;
+    for (let i = 0; i < mineWorkers.length; i++) {
+      sum += mineWorkers[i].hashesTotal || 0;
+    }
+    window.totalhashes = sum;
+    return sum;
+  }
+  
+  // Update hashrate display every second
+  setInterval(function() {
+    if (isRunning) {
+      const hashrate = getHashesPerSecond();
+      getTotalHashes();
+      if (hashrate > 0) {
+        console.log('[Miner] Hashrate:', hashrate.toFixed(2), 'H/s, Total:', window.totalhashes);
+      }
+    }
+  }, 5000);
   
   // ==========================================================================
   // WEBSOCKET CONNECTION TO PROXY
@@ -359,10 +496,11 @@ initModule();
           // Store job and send to all workers
           currentJob = msg.params || msg;
           window.job = currentJob;
-          console.log('[Miner] New job:', currentJob.job_id);
+          console.log('[Miner] New job:', currentJob.job_id, 'seed:', currentJob.seed_hash?.substring(0, 16) + '...');
           
-          for (let i = 0; i < workers.length; i++) {
-            workers[i].postMessage({ type: 'job', job: currentJob });
+          // Distribute job to all workers
+          for (let i = 0; i < mineWorkers.length; i++) {
+            mineWorkers[i].setJob(currentJob, onTargetMet);
           }
           
           if (typeof window.on_servermsg === 'function') {
@@ -371,7 +509,7 @@ initModule();
         } else if (msg.type === 'hash_accepted' || msg.type === 'accepted') {
           acceptedHashes++;
           window.acceptedhashes = acceptedHashes;
-          console.log('[Miner] Share accepted! Total:', acceptedHashes);
+          console.log('[Miner] Share accepted! Total accepted:', acceptedHashes);
           
           if (typeof window.on_servermsg === 'function') {
             window.on_servermsg({ type: 'accepted' });
@@ -414,15 +552,28 @@ initModule();
       isRunning = true;
     }
     
-    const worker = createWorker();
-    console.log('[Miner] Worker created, total:', workers.length);
+    const mw = new MineWorker();
+    mineWorkers.push(mw);
+    
+    // For compatibility, expose raw workers array
+    window.workers = mineWorkers.map(m => m.worker);
+    
+    console.log('[Miner] Worker created, total:', mineWorkers.length);
+    
+    // If we have a job, set it on the new worker
+    if (currentJob) {
+      // Give worker time to init
+      setTimeout(function() {
+        mw.setJob(currentJob, onTargetMet);
+      }, 2000);
+    }
     
     // Call informWorker callback if exists
     if (typeof window.informWorker === 'function') {
-      window.informWorker(worker, workers.length - 1);
+      window.informWorker(mw.worker, mineWorkers.length - 1);
     }
     
-    return worker;
+    return mw.worker;
   }
   
   // Delete all workers
@@ -430,13 +581,12 @@ initModule();
     console.log('[Miner] Stopping all workers...');
     isRunning = false;
     
-    for (let i = 0; i < workers.length; i++) {
+    for (let i = 0; i < mineWorkers.length; i++) {
       try {
-        workers[i].postMessage({ type: 'stop' });
-        workers[i].terminate();
+        mineWorkers[i].stop();
       } catch (e) {}
     }
-    workers = [];
+    mineWorkers = [];
     window.workers = [];
     
     if (ws && ws.close) {
@@ -459,8 +609,11 @@ initModule();
   window.openWebSocket = openWebSocket;
   window.knowingtogood = knowingtogood;
   window.deleteAllWorkers = deleteAllWorkers;
+  window.getHashesPerSecond = getHashesPerSecond;
+  window.getTotalHashes = getTotalHashes;
   
-  console.log('[Miner] RandomX Miner v3.8.0 loaded');
+  console.log('[Miner] RandomX Miner v3.9.0 loaded (demo-compatible)');
+  console.log('[Miner] Base URL:', BASE_URL);
   console.log('[Miner] Proxy:', config.proxy);
   console.log('[Miner] Pool:', config.pool);
   console.log('[Miner] Algo:', config.algo);

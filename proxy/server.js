@@ -530,6 +530,7 @@ let poolAuthenticated = false;  // TRUE only after pool sends first job response
 let poolWorkerId = null;  // Session ID from pool - MUST use this for submits!
 let poolBuffer = '';
 let currentJob = null;
+let jobsBroadcast = 0;  // Counter for how many jobs have been broadcast
 let recentJobs = new Map();  // job_id -> job (keep last 10 jobs for slow miners)
 const MAX_RECENT_JOBS = 10;
 let minerId = 0;
@@ -607,6 +608,9 @@ function connectToPool() {
 }
 
 function handlePoolMessage(msg) {
+  // Debug: Log ALL messages from pool
+  console.log('[Pool] Message received:', JSON.stringify(msg).substring(0, 200));
+  
   // Login response with job
   if (msg.id === 1 && msg.result && msg.result.job) {
     // CRITICAL: Save the worker ID from pool - we MUST use this for all submits!
@@ -739,6 +743,7 @@ function reconnectPool() {
 
 function broadcastJob(job) {
   if (!job) return;
+  jobsBroadcast++;  // Increment job counter
   const msg = {
     type: 'job',
     params: {
@@ -751,7 +756,7 @@ function broadcastJob(job) {
       algo: job.algo || 'rx/0'
     }
   };
-  console.log('[Broadcast] Sending job to miners:', JSON.stringify({
+  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job to miners:`, JSON.stringify({
     job_id: msg.params.job_id,
     blob: msg.params.blob ? 'present' : 'MISSING',
     target: msg.params.target,
@@ -916,6 +921,7 @@ const server = http.createServer(async (req, res) => {
         host: CONFIG.pool.host,
         port: CONFIG.pool.port,
         connected: poolConnected,
+        jobsBroadcast: jobsBroadcast,  // Number of jobs broadcast to miners
         suspended: globalStats.suspended,
         suspensionRemaining: globalStats.suspended ? Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000) : 0,
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),

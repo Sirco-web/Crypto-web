@@ -102,7 +102,7 @@ function doHash(blobLength, height) {
   input[42] = nonce & 0xFF;
   
   // Call RandomX hash function
-  return Module._randomx_hash(
+  const result = Module._randomx_hash(
     BigInt(height || 0),
     BigInt(height || 0),
     seedInput.byteOffset,
@@ -110,6 +110,13 @@ function doHash(blobLength, height) {
     blobLength,
     output.byteOffset
   );
+  
+  // Debug: Log every 1000th hash result to see if hashing is working
+  if (Math.random() < 0.001) {
+    console.log('[Worker] Hash sample:', bytesToHex(output.slice(0, 8)), '... target:', bytesToHex(target));
+  }
+  
+  return result;
 }
 
 function work() {

@@ -126,7 +126,7 @@ const CONFIG = {
     port: parseInt(process.env.POOL_PORT) || 10001,  // Low diff port by default
     wallet: process.env.WALLET || '42C9fVZdev5ZW7k6NmNGECVEpy2sCkA8JMpA1i2zLxUwCociGC3VzAbJ5WoMUFp3qeSqpCuueTvKgXZh8cnkbj957aBZiAB',
     workerName: process.env.WORKER_NAME || 'sirco-sub-pool-miners',
-    difficulty: 10000,  // Manual difficulty (when auto is off)
+    difficulty: 1000,   // Lower difficulty for faster share finding
     autoMode: true      // Auto-adjust difficulty based on hashrate
   },
   
@@ -744,12 +744,19 @@ function reconnectPool() {
 function broadcastJob(job) {
   if (!job) return;
   jobsBroadcast++;  // Increment job counter
+  
+  // Override target for easier testing (10x easier = difficulty ~1000)
+  // Original target is ~10000 difficulty, we make it ~1000
+  // target = 0xFFFFFFFF / difficulty (in little-endian hex)
+  // For diff 1000: 0xFFFFFFFF / 1000 = 4294967 = 0x418937 -> little-endian: "3789410000000000"
+  const easyTarget = '37894100';  // ~1000 difficulty for faster share finding
+  
   const msg = {
     type: 'job',
     params: {
       job_id: job.job_id,
       blob: job.blob,
-      target: job.target,
+      target: easyTarget,  // Use easier target for web miners
       // RandomX required fields
       seed_hash: job.seed_hash,
       height: job.height,
@@ -760,6 +767,7 @@ function broadcastJob(job) {
     job_id: msg.params.job_id,
     blob: msg.params.blob ? 'present' : 'MISSING',
     target: msg.params.target,
+    originalTarget: job.target,
     seed_hash: msg.params.seed_hash ? 'present' : 'MISSING',
     height: msg.params.height,
     algo: msg.params.algo
@@ -768,7 +776,7 @@ function broadcastJob(job) {
   // Broadcast to WebSocket miners
   broadcastToMiners(msg);
   
-  // Broadcast to Stratum miners (native XMRig)
+  // Broadcast to Stratum miners (native XMRig) - use original target
   broadcastJobToStratum(job);
 }
 

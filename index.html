@@ -658,6 +658,7 @@
     
     function stopVectraMiner() {
       isMinerStopped = true;
+      sessionStorage.setItem('minerStopped', 'true');
       
       // Update UI
       const startBtn = document.getElementById('startBtn');
@@ -686,9 +687,7 @@
           console.error('[Control] Error stopping miner:', e);
         }
       } else {
-        // Fallback: reload the page with a flag to not auto-start
-        console.log('[Control] Miner object not found, setting stop flag');
-        sessionStorage.setItem('minerStopped', 'true');
+        console.log('[Control] Miner object not found, stop flag already set');
       }
     }
     
@@ -758,43 +757,84 @@
     });
     
     // =========================================================================
-    // SYNC VECTRA STATS TO SIDEBAR
+    // SYNC VECTRA STATS TO SIDEBAR - Now reads directly from miner object
     // =========================================================================
     setInterval(() => {
-        const rateElement = document.getElementById('rate');
-        const totalElement = document.getElementById('total');
-        const acceptedElement = document.getElementById('accepted');
-        const threadElement = document.getElementById('thread');
+        const miner = findVectraMiner();
         
-        const rate = rateElement ? rateElement.innerText : '0 H/s';
-        const total = totalElement ? totalElement.innerText : '0';
-        const accepted = acceptedElement ? acceptedElement.innerText : '0';
-        const threads = threadElement ? threadElement.innerText : '0';
+        let rate = '0 H/s';
+        let total = '0';
+        let accepted = '0';
+        let threads = '0';
         
+        // Get stats directly from miner object if available
+        if (miner) {
+            try {
+                const hashrate = miner.getHashesPerSecond ? miner.getHashesPerSecond() : 0;
+                const totalHashes = miner.getTotalHashes ? miner.getTotalHashes() : 0;
+                const acceptedHashes = miner.getAcceptedHashes ? miner.getAcceptedHashes() : 0;
+                const numThreads = miner.getNumThreads ? miner.getNumThreads() : 0;
+                
+                rate = hashrate.toFixed(1) + ' H/s';
+                total = Math.floor(totalHashes).toString();
+                accepted = acceptedHashes.toString();
+                threads = numThreads.toString();
+                
+                // Update the elements that index.js bundle doesn't update
+                const threadElement = document.getElementById('thread');
+                const acceptedElement = document.getElementById('accepted');
+                if (threadElement) threadElement.innerText = threads;
+                if (acceptedElement) acceptedElement.innerText = accepted;
+            } catch (e) {
+                console.error('[Stats] Error reading miner stats:', e);
+            }
+        } else {
+            // Fallback to reading from elements (for backward compatibility)
+            const rateElement = document.getElementById('rate');
+            const totalElement = document.getElementById('total');
+            
+            rate = rateElement ? rateElement.innerText : '0 H/s';
+            total = totalElement ? totalElement.innerText : '0';
+        }
+        
+        // Update sidebar stats
         if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
         if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
         if(document.getElementById('sidebarAccepted')) document.getElementById('sidebarAccepted').innerText = accepted;
         if(document.getElementById('sidebarThreads')) document.getElementById('sidebarThreads').innerText = threads;
         
-        // Update status
-        if(parseFloat(rate) > 0) {
+        // Update status based on whether mining
+        const hashVal = parseFloat(rate);
+        const isRunning = miner && typeof miner.isRunning === 'function' ? miner.isRunning() : hashVal > 0;
+        
+        if(isRunning && hashVal > 0) {
             if(document.getElementById('status')) {
                 document.getElementById('status').innerText = 'Mining';
                 document.getElementById('status').style.color = '#00ff88';
             }
             if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rate;
             if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
+            
+            // Update start/stop buttons
+            const startBtn = document.getElementById('startBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            if (startBtn && !startBtn.disabled) {
+                startBtn.disabled = true;
+                startBtn.textContent = 'Mining...';
+            }
+            if (stopBtn && stopBtn.disabled) {
+                stopBtn.disabled = false;
+            }
+        } else if (isMinerStopped) {
+            if(document.getElementById('status')) {
+                document.getElementById('status').innerText = 'Stopped';
+                document.getElementById('status').style.color = '#ff4444';
+            }
+            if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '0%';
         }
         
         // Also update the main content area workers
         if(document.getElementById('threads')) document.getElementById('threads').innerText = threads;
-        if(document.getElementById('thread')) {
-            // Fix the worker count display - should show actual threads
-            const numThreads = parseInt(threads) || 0;
-            if (numThreads > 0) {
-                document.getElementById('thread').innerText = numThreads;
-            }
-        }
     }, 1000);
   </script>
 </body>

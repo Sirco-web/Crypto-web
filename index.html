@@ -522,8 +522,8 @@
       script.defer = true;
       script.onload = function() {
         console.log('[Control] Miner script loaded, setting up event listeners...');
-        // Wait a moment for miner to initialize
-        setTimeout(setupMinerEventListeners, 500);
+        // Set up listeners immediately and then start the miner
+        setupMinerEventListeners();
       };
       document.body.appendChild(script);
     }
@@ -583,6 +583,14 @@
       });
       
       console.log('[Miner] Event listeners ready');
+      
+      // Start mining AFTER listeners are attached (if not manually stopped)
+      if (sessionStorage.getItem('minerStopped') !== 'true') {
+        console.log('[Miner] Starting miner...');
+        miner.start();
+      } else {
+        console.log('[Miner] Miner was previously stopped, not auto-starting');
+      }
     }
     
     // Check consent flag - only auto-load if already consented

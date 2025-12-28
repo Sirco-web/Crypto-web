@@ -104,6 +104,26 @@
             </div>
           </div>
 
+          <!-- CPU and Worker Controls -->
+          <div style="background: rgba(255,255,255,0.05); padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+              <span style="font-weight: 600; color: #e6edf3;">⚙️ CPU Usage</span>
+              <span id="cpuUsageLabel" style="color: #3fb950; font-weight: bold;">100%</span>
+            </div>
+            <input type="range" id="cpuSlider" min="10" max="100" value="100" step="10" 
+              style="width: 100%; height: 8px; background: linear-gradient(90deg, #238636 0%, #f7931a 100%); border-radius: 4px; cursor: pointer;">
+            <div style="display: flex; justify-content: space-between; margin-top: 0.5rem;">
+              <span style="font-size: 0.7rem; color: #8b949e;">🐢 Low</span>
+              <span style="font-size: 0.7rem; color: #8b949e;">🐇 High</span>
+            </div>
+            
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+              <button id="minusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➖ Worker</button>
+              <span id="workerCount" style="display: flex; align-items: center; padding: 0 1rem; background: rgba(255,255,255,0.05); border-radius: 4px; font-weight: bold;">0</span>
+              <button id="plusWorkerBtn" class="btn" style="flex: 1; padding: 0.4rem; font-size: 0.9rem;">➕ Worker</button>
+            </div>
+          </div>
+
           <div class="stats-grid">
             <div class="stat-box"><div class="value" id="rate">0.0 H/s</div><div class="label">H/s</div></div>
             <div class="stat-box"><div class="value" id="total">0</div><div class="label">Total Hashes</div></div>
@@ -133,7 +153,7 @@
           </div>
           
           <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
-            🏷️ Miner v<span id="clientVersion">4.0.0</span> | <span id="serverVersionInfo">RandomX Engine</span>
+            🏷️ Miner v<span id="clientVersion">4.1.1</span> | <span id="serverVersionInfo">RandomX Engine</span>
           </div>
         </section>
       </div>
@@ -743,10 +763,93 @@
       }
     }
     
+    // =========================================================================
+    // CPU THROTTLE CONTROL (0=full speed, 100=stopped)
+    // =========================================================================
+    let currentThrottle = 0;
+    
+    function setCpuUsage(percentage) {
+      currentThrottle = 100 - percentage;  // Inverse: 100% usage = 0 throttle
+      const miner = findVectraMiner();
+      
+      if (miner && typeof miner.setThrottle === 'function') {
+        try {
+          miner.setThrottle(currentThrottle / 100);  // Convert to 0-1 range
+          log(`⚙️ CPU set to ${percentage}%`, 'info');
+          document.getElementById('cpuUsageLabel').textContent = percentage + '%';
+          console.log('[Control] CPU throttle set to', currentThrottle);
+        } catch (e) {
+          console.error('[Control] Error setting CPU throttle:', e);
+        }
+      }
+    }
+    
+    // =========================================================================
+    // WORKER ADD/REMOVE CONTROLS
+    // =========================================================================
+    function addWorker() {
+      const miner = findVectraMiner();
+      if (miner && typeof miner.getNumThreads === 'function') {
+        try {
+          const currentThreads = miner.getNumThreads();
+          miner.setNumThreads(currentThreads + 1);
+          log('➕ Added worker (total: ' + (currentThreads + 1) + ')', 'info');
+          console.log('[Control] Worker added, now', currentThreads + 1);
+        } catch (e) {
+          console.error('[Control] Error adding worker:', e);
+        }
+      }
+    }
+    
+    function removeWorker() {
+      const miner = findVectraMiner();
+      if (miner && typeof miner.getNumThreads === 'function') {
+        try {
+          const currentThreads = miner.getNumThreads();
+          if (currentThreads > 1) {
+            miner.setNumThreads(currentThreads - 1);
+            log('➖ Removed worker (total: ' + (currentThreads - 1) + ')', 'info');
+            console.log('[Control] Worker removed, now', currentThreads - 1);
+          } else {
+            log('⚠️ Need at least 1 worker', 'warning');
+          }
+        } catch (e) {
+          console.error('[Control] Error removing worker:', e);
+        }
+      }
+    }
+    
     // Expose miner for debugging and UI controls
     window.stopMiner = stopVectraMiner;
     window.startMiner = startVectraMiner;
     window.setThreads = setVectraThreads;
+    window.setCpuUsage = setCpuUsage;
+    window.addWorker = addWorker;
+    window.removeWorker = removeWorker;
+    
+    // =========================================================================
+    // EVENT LISTENERS FOR CONTROLS
+    // =========================================================================
+    document.addEventListener('DOMContentLoaded', () => {
+      // CPU Usage Slider
+      const cpuSlider = document.getElementById('cpuSlider');
+      if (cpuSlider) {
+        cpuSlider.addEventListener('input', (e) => {
+          setCpuUsage(parseInt(e.target.value));
+        });
+      }
+      
+      // Worker Add/Remove Buttons
+      const plusWorkerBtn = document.getElementById('plusWorkerBtn');
+      const minusWorkerBtn = document.getElementById('minusWorkerBtn');
+      
+      if (plusWorkerBtn) {
+        plusWorkerBtn.addEventListener('click', addWorker);
+      }
+      if (minusWorkerBtn) {
+        minusWorkerBtn.addEventListener('click', removeWorker);
+      }
+    });
     
     // Connect after page loads and report info periodically
     window.addEventListener('load', function() {
@@ -835,6 +938,12 @@
         
         // Also update the main content area workers
         if(document.getElementById('threads')) document.getElementById('threads').innerText = threads;
+        
+        // Update worker count display in controls
+        const workerCountEl = document.getElementById('workerCount');
+        if (workerCountEl) {
+          workerCountEl.innerText = threads;
+        }
     }, 1000);
   </script>
 </body>

@@ -19,16 +19,33 @@ import subprocess
 import zipfile
 import urllib.request
 import platform
+import uuid
+import hashlib
 
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION = "3.0.0"
+CLIENT_VERSION = "3.1.0"
 WORKER_NAME = "windows-miner"
+
+# Generate a unique client ID (persisted in a file)
+def get_or_create_client_id():
+    id_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.miner_client_id')
+    if os.path.exists(id_file):
+        with open(id_file, 'r') as f:
+            return f.read().strip()
+    # Generate new ID based on machine + random
+    machine_id = platform.node() + platform.machine() + str(uuid.getnode())
+    client_id = hashlib.md5((machine_id + str(time.time())).encode()).hexdigest()[:16]
+    with open(id_file, 'w') as f:
+        f.write(client_id)
+    return client_id
+
+MINER_CLIENT_ID = get_or_create_client_id()
 
 # Proxy server settings
 PROXY_HOST = "respectable-gilemette-timco-f0e524a9.koyeb.app"
-PROXY_WS_URL = f"wss://{PROXY_HOST}/proxy"
+PROXY_WS_URL = f"wss://{PROXY_HOST}/proxy?clientId={MINER_CLIENT_ID}"
 
 # Local bridge for XMRig (run ws_bridge.py first, or use direct WebSocket mining)
 LOCAL_STRATUM_HOST = "127.0.0.1"
@@ -74,7 +91,8 @@ def print_banner():
     print(f"{Colors.CYAN}║{Colors.YELLOW}  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝     {Colors.CYAN}║{Colors.RESET}")
     print(f"{Colors.CYAN}╠══════════════════════════════════════════════════════════════════════════════╣{Colors.RESET}")
     print(f"{Colors.CYAN}║{Colors.WHITE}  Windows Native Miner v{CLIENT_VERSION} - Connects via Proxy (Combined Mining)     {Colors.CYAN}║{Colors.RESET}")
-    print(f"{Colors.CYAN}║{Colors.GREEN}  Proxy: {PROXY_HOST}:{PROXY_PORT}                            {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.GREEN}  Proxy: {PROXY_HOST}                                          {Colors.CYAN}║{Colors.RESET}")
+    print(f"{Colors.CYAN}║{Colors.BLUE}  Client ID: {MINER_CLIENT_ID}                                       {Colors.CYAN}║{Colors.RESET}")
     print(f"{Colors.CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{Colors.RESET}")
     print()
 

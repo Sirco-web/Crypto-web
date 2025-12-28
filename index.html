@@ -173,11 +173,27 @@
     var workerCounter = 0;
     
     // =========================================================================
+    // UNIQUE CLIENT ID - Persisted across page refreshes but unique per browser
+    // =========================================================================
+    function getOrCreateClientId() {
+      let clientId = localStorage.getItem('minerClientId');
+      if (!clientId) {
+        // Generate a unique ID: timestamp + random hex
+        clientId = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+        localStorage.setItem('minerClientId', clientId);
+      }
+      return clientId;
+    }
+    var minerClientId = getOrCreateClientId();
+    
+    // =========================================================================
     // PROXY/POOL CONFIGURATION
     // =========================================================================
     // Use CONFIG from config.js for all settings
     function getProxyWsUrl() {
-      return CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+      const baseUrl = CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+      // Add client ID to URL for unique identification
+      return baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'clientId=' + minerClientId;
     }
     
     var rightProxy = getProxyWsUrl();
@@ -643,15 +659,18 @@
     let infoReconnectTimeout = null;
     const CLIENT_VERSION = CONFIG.VERSION || '4.0.0';
     
-    function getWsUrl() {
-      return CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+    function getInfoWsUrl() {
+      const baseUrl = CONFIG.PROXY_URL || 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';
+      // Change /proxy to /info and add client ID for proper merging
+      const infoUrl = baseUrl.replace('/proxy', '/info');
+      return infoUrl + (infoUrl.includes('?') ? '&' : '?') + 'clientId=' + minerClientId;
     }
     
     function connectInfoSocket() {
       if (infoSocket && infoSocket.readyState === WebSocket.OPEN) return;
       
       try {
-        infoSocket = new WebSocket(getWsUrl());
+        infoSocket = new WebSocket(getInfoWsUrl());
         
         infoSocket.onopen = function() {
           console.log('[Info] Connected to server for reporting');

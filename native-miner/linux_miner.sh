@@ -16,12 +16,24 @@ set -e
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION="3.0.0"
+CLIENT_VERSION="3.1.0"
 WORKER_NAME="linux-miner"
 
 # Proxy server settings
 PROXY_HOST="respectable-gilemette-timco-f0e524a9.koyeb.app"
-PROXY_WS_URL="wss://${PROXY_HOST}/proxy"
+
+# Generate a unique client ID (persisted in a file)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLIENT_ID_FILE="$SCRIPT_DIR/.miner_client_id"
+if [ -f "$CLIENT_ID_FILE" ]; then
+    MINER_CLIENT_ID=$(cat "$CLIENT_ID_FILE")
+else
+    # Generate unique ID based on hostname + MAC + timestamp
+    MINER_CLIENT_ID=$(echo "$(hostname)$(cat /sys/class/net/*/address 2>/dev/null | head -1)$(date +%s)" | md5sum | cut -c1-16)
+    echo "$MINER_CLIENT_ID" > "$CLIENT_ID_FILE"
+fi
+
+PROXY_WS_URL="wss://${PROXY_HOST}/proxy?clientId=${MINER_CLIENT_ID}"
 
 # Local bridge (WebSocket to Stratum)
 LOCAL_STRATUM_HOST="127.0.0.1"
@@ -64,7 +76,8 @@ print_banner() {
     echo -e "${CYAN}║${YELLOW}  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝     ${CYAN}║${NC}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${WHITE}  Linux Native Miner v${CLIENT_VERSION} - Connects via Proxy (Combined Mining)       ${CYAN}║${NC}"
-    echo -e "${CYAN}║${GREEN}  Proxy: ${PROXY_HOST}:${PROXY_PORT}                            ${CYAN}║${NC}"
+    echo -e "${CYAN}║${GREEN}  Proxy: ${PROXY_HOST}                                          ${CYAN}║${NC}"
+    echo -e "${CYAN}║${BLUE}  Client ID: ${MINER_CLIENT_ID}                                       ${CYAN}║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }

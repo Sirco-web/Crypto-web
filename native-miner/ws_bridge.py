@@ -13,11 +13,37 @@ Then point XMRig to: stratum+tcp://127.0.0.1:3333
 import asyncio
 import json
 import sys
+import os
+import hashlib
+import platform
+import time
 import websockets
 
+# Generate a unique client ID (persisted in a file)
+def get_or_create_client_id():
+    id_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.bridge_client_id')
+    if os.path.exists(id_file):
+        with open(id_file, 'r') as f:
+            return f.read().strip()
+    # Generate new ID based on machine + random
+    try:
+        import uuid
+        machine_id = platform.node() + platform.machine() + str(uuid.getnode())
+    except:
+        machine_id = platform.node() + str(time.time())
+    client_id = hashlib.md5((machine_id + str(time.time())).encode()).hexdigest()[:16]
+    with open(id_file, 'w') as f:
+        f.write(client_id)
+    return client_id
+
+BRIDGE_CLIENT_ID = get_or_create_client_id()
+
 # Configuration
-PROXY_WS_URL = "wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy"
+PROXY_WS_URL = f"wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy?clientId={BRIDGE_CLIENT_ID}"
 LOCAL_PORT = 3333
+
+print(f"[Bridge] Client ID: {BRIDGE_CLIENT_ID}")
+print(f"[Bridge] Proxy URL: {PROXY_WS_URL}")
 
 # Store the current job
 current_job = None

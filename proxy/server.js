@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.2.3';
+const SERVER_VERSION = '4.3.0';
 const VERSION_DATE = '2025-12-28';
 
 // =============================================================================
@@ -549,11 +549,24 @@ function connectToPool() {
   
   sharedPool = new net.Socket();
   
+  // Keep-alive ping to prevent pool session timeout (every 30 seconds)
+  let poolKeepAlive = null;
+  
   sharedPool.connect(CONFIG.pool.port, CONFIG.pool.host, () => {
     console.log('[Pool] TCP Connected, sending login...');
     poolConnected = true;
     poolAuthenticated = false;  // Not authenticated until we get job response
     currentJob = null;  // Clear old job on reconnect
+    
+    // Start keep-alive pings to prevent pool session timeout
+    if (poolKeepAlive) clearInterval(poolKeepAlive);
+    poolKeepAlive = setInterval(() => {
+      if (sharedPool && sharedPool.writable && poolAuthenticated) {
+        // Send keepalive (empty object or ping)
+        sharedPool.write(JSON.stringify({ id: 0, method: 'keepalived' }) + '\n');
+        console.log('[Pool] Keepalive ping sent');
+      }
+    }, 30000); // Every 30 seconds
     
     // Login with combined worker name and difficulty
     const currentDiff = CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty;
@@ -588,6 +601,7 @@ function connectToPool() {
   
   sharedPool.on('error', (err) => {
     console.error('[Pool] Error:', err.message);
+    if (poolKeepAlive) clearInterval(poolKeepAlive);
     poolConnected = false;
     poolAuthenticated = false;
     poolWorkerId = null;
@@ -597,6 +611,7 @@ function connectToPool() {
   
   sharedPool.on('close', () => {
     console.log('[Pool] Disconnected, reconnecting in 5s...');
+    if (poolKeepAlive) clearInterval(poolKeepAlive);
     poolConnected = false;
     poolAuthenticated = false;
     poolWorkerId = null;
@@ -1697,20 +1712,33 @@ function sendCommandToClient(clientId, action) {
 wss.on('connection', (ws, req) => {
   const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
   const userAgent = req.headers['user-agent'] || 'Unknown';
-  const clientId = ++minerId;
+  const serverAssignedId = ++minerId;
   
-  // Check URL path to determine if this is an info socket
-  // Info sockets connect to /info, miners connect to /proxy
+  // Parse URL for path and client-generated ID
+  // URL format: /proxy?clientId=xxx or /info?clientId=xxx
   const urlPath = req.url || '/proxy';
+  const urlParams = new URL('http://localhost' + urlPath);
+  const clientGeneratedId = urlParams.searchParams.get('clientId');
   const isInfoSocket = urlPath.includes('/info');
   
-  // If this is an info socket, find the most recent miner from this IP to merge with
+  // Use client-generated ID if provided, otherwise use server-assigned
+  const clientId = clientGeneratedId ? `c${clientGeneratedId}` : serverAssignedId;
+  
+  // If this is an info socket, find the matching miner by clientId or IP
   let existingMiner = null;
   let existingMinerId = null;
-  if (isInfoSocket) {
+  if (isInfoSocket && clientGeneratedId) {
+    // First try to find by exact client ID
+    const matchingId = `c${clientGeneratedId}`;
+    if (globalStats.activeMiners.has(matchingId)) {
+      existingMiner = globalStats.activeMiners.get(matchingId);
+      existingMinerId = matchingId;
+    }
+  }
+  // Fallback: if no client ID match, try IP match (legacy behavior)
+  if (isInfoSocket && !existingMiner) {
     for (const [id, miner] of globalStats.activeMiners) {
       if (miner.ip === clientIP && !id.toString().startsWith('stratum-')) {
-        // Get the most recently connected miner from this IP
         if (!existingMiner || miner.connected > existingMiner.connected) {
           existingMiner = miner;
           existingMinerId = id;
@@ -1720,7 +1748,6 @@ wss.on('connection', (ws, req) => {
   }
   
   // Detect worker type from user agent
-  let workerType = 'Unknown';
   let workerType = 'Unknown';
   if (userAgent.includes('Python')) {
     workerType = '🐍 Python';
@@ -2628,9 +2655,21 @@ function generateDashboardHTML() {
     
     <div class="grid">
       <div class="card combined">
-        <h3>👥 Active Miners</h3>
+        <h3>⚡ Combined Hashrate</h3>
+        <div class="value orange" id="combinedHashrate">${globalStats.combinedHashrate.toFixed(1)} H/s</div>
+        <div class="sub">All ${globalStats.activeMiners.size} workers combined</div>
+      </div>
+      
+      <div class="card combined">
+        <h3>👥 Active Workers</h3>
         <div class="value orange" id="minerCount">${globalStats.activeMiners.size}</div>
         <div class="sub" id="totalConnections">${globalStats.totalConnections} total connections</div>
+      </div>
+      
+      <div class="card">
+        <h3>🎯 Current Difficulty</h3>
+        <div class="value" id="currentDiff">${CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty}</div>
+        <div class="sub" id="diffMode">${CONFIG.pool.autoMode ? '🤖 AUTO mode' : '✋ MANUAL mode'}</div>
       </div>
       
       <div class="card">
@@ -2666,13 +2705,14 @@ function generateDashboardHTML() {
     </div>
     
     <div class="card" style="margin-top: 1.5rem;">
-      <h3>🖥️ Connected Miners</h3>
+      <h3>🖥️ Connected Workers</h3>
       <table class="miners-table">
         <thead>
           <tr>
             <th>ID</th>
             <th>Type</th>
             <th>IP Address</th>
+            <th>Hashrate</th>
             <th>Status</th>
             <th>Shares</th>
             <th>Connected</th>
@@ -2680,7 +2720,7 @@ function generateDashboardHTML() {
         </thead>
         <tbody id="minersTableBody">
           ${globalStats.activeMiners.size === 0 ? 
-            '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>' : 
+            '<tr><td colspan="7" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>' : 
             Array.from(globalStats.activeMiners.values()).map(m => {
               const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
               const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
@@ -2690,6 +2730,7 @@ function generateDashboardHTML() {
             <td><span class="status" style="background: ${statusColor}"></span>#${m.id}</td>
             <td>${m.workerType || '🖥️'}</td>
             <td>${m.ip}</td>
+            <td style="color: #f7931a; font-weight: bold;">${(m.hashrate || 0).toFixed(1)} H/s</td>
             <td style="color: ${statusColor};">${statusIcon} ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</td>
             <td>${m.hashes}</td>
             <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
@@ -2698,6 +2739,10 @@ function generateDashboardHTML() {
             }).join('')}
         </tbody>
       </table>
+      <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(247,147,26,0.1); border: 1px solid #f7931a; border-radius: 8px; text-align: center;">
+        <strong style="color: #f7931a;">⚡ Total Combined: ${globalStats.combinedHashrate.toFixed(1)} H/s</strong>
+        <span style="color: #8b949e;"> from ${globalStats.activeMiners.size} worker(s)</span>
+      </div>
     </div>
     
     <div class="card" style="margin-top: 1.5rem;">
@@ -2741,7 +2786,15 @@ function generateDashboardHTML() {
         const res = await fetch('/api/stats');
         const data = await res.json();
         
-        // Update values
+        // Update combined hashrate (prominently)
+        document.getElementById('combinedHashrate').textContent = (data.mining.combinedHashrate || 0).toFixed(1) + ' H/s';
+        document.getElementById('combinedHashrate').parentElement.querySelector('.sub').textContent = 'All ' + data.miners.active + ' workers combined';
+        
+        // Update difficulty
+        document.getElementById('currentDiff').textContent = data.config?.difficulty || '-';
+        document.getElementById('diffMode').textContent = data.config?.autoMode ? '🤖 AUTO mode' : '✋ MANUAL mode';
+        
+        // Update other values
         document.getElementById('minerCount').textContent = data.miners.active;
         document.getElementById('totalConnections').textContent = data.miners.totalConnections + ' total connections';
         document.getElementById('acceptedShares').textContent = data.mining.acceptedShares;
@@ -2761,16 +2814,16 @@ function generateDashboardHTML() {
           suspensionAlert.style.display = 'none';
         }
         
-        // Update miners table
+        // Update miners table with hashrates
         const tbody = document.getElementById('minersTableBody');
         if (data.miners.list.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="color: #8b949e; text-align: center;">No miners connected yet</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>';
         } else {
           tbody.innerHTML = data.miners.list.map(m => {
             const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
             const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
             const statusText = m.status || 'mining';
-            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText.charAt(0).toUpperCase() + statusText.slice(1) + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
+            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #f7931a; font-weight: bold;">' + (m.hashrate || 0).toFixed(1) + ' H/s</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText.charAt(0).toUpperCase() + statusText.slice(1) + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
           }).join('');
         }
         

@@ -1649,6 +1649,21 @@ wss.on('connection', (ws, req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown';
   const clientId = ++minerId;
   
+  // Check if there's already a miner from this IP (to avoid duplicate entries)
+  let existingMiner = null;
+  let existingMinerId = null;
+  for (const [id, miner] of globalStats.activeMiners) {
+    if (miner.ip === clientIP && !id.toString().startsWith('stratum-')) {
+      existingMiner = miner;
+      existingMinerId = id;
+      break;
+    }
+  }
+  
+  // If there's an existing miner from same IP, this is likely an info socket
+  // We'll mark this connection but not create a new miner entry
+  const isInfoSocket = existingMiner !== null;
+  
   // Detect worker type from user agent
   let workerType = 'Unknown';
   if (userAgent.includes('Python')) {
@@ -1669,24 +1684,32 @@ wss.on('connection', (ws, req) => {
     workerType = '🖥️ Desktop';
   }
   
-  globalStats.totalConnections++;
-  globalStats.activeMiners.set(clientId, {
-    id: clientId,
-    ip: clientIP,
-    ws: ws,
-    hashrate: 0,
-    hashes: 0,
-    connected: Date.now(),
-    lastUpdate: Date.now(),
-    workerType: workerType,
-    userAgent: userAgent.slice(0, 50),  // Truncate for display
-    cores: 0,       // CPU cores (reported by miner)
-    threads: 0,     // Current mining threads
-    throttle: 0,    // Current throttle %
-    status: 'starting'  // starting, mining, stopped
-  });
+  // Only create a new miner entry if there isn't one already from this IP
+  if (!isInfoSocket) {
+    globalStats.totalConnections++;
+    globalStats.activeMiners.set(clientId, {
+      id: clientId,
+      ip: clientIP,
+      ws: ws,
+      hashrate: 0,
+      hashes: 0,
+      connected: Date.now(),
+      lastUpdate: Date.now(),
+      workerType: workerType,
+      userAgent: userAgent.slice(0, 50),  // Truncate for display
+      cores: 0,       // CPU cores (reported by miner)
+      threads: 0,     // Current mining threads
+      throttle: 0,    // Current throttle %
+      status: 'starting'  // starting, mining, stopped
+    });
+    console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) (${globalStats.activeMiners.size} active)`);
+  } else {
+    console.log(`[Info Socket] Connected from ${clientIP} (merging with Miner #${existingMinerId})`);
+  }
   
-  console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) (${globalStats.activeMiners.size} active)`);
+  // Get the miner object (either new or existing)
+  const miner = isInfoSocket ? existingMiner : globalStats.activeMiners.get(clientId);
+  const effectiveClientId = isInfoSocket ? existingMinerId : clientId;
   
   // Ensure pool is connected
   if (!sharedPool) {
@@ -1721,13 +1744,16 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
-      const miner = globalStats.activeMiners.get(clientId);
+      // For info sockets, use the existing miner from same IP
+      // For regular miners, use their own entry
+      const activeMiner = isInfoSocket ? existingMiner : globalStats.activeMiners.get(clientId);
+      const logId = isInfoSocket ? `Info->Miner #${existingMinerId}` : `Miner #${clientId}`;
       
       // Update lastUpdate on ANY message to prevent stale detection
-      if (miner) miner.lastUpdate = Date.now();
+      if (activeMiner) activeMiner.lastUpdate = Date.now();
       
       if (msg.type === 'auth') {
-        console.log(`[Miner #${clientId}] Auth request`);
+        console.log(`[${logId}] Auth request`);
         // Pool is shared, just confirm auth if AUTHENTICATED (not just connected)
         if (poolAuthenticated && currentJob) {
           ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
@@ -1745,48 +1771,58 @@ wss.on('connection', (ws, req) => {
         }
       }
       else if (msg.type === 'submit') {
-        console.log(`[Miner #${clientId}] Submitting share...`);
+        console.log(`[${logId}] Submitting share...`);
         submitToPool(msg.params);
-        if (miner) {
-          miner.hashes++;
-          miner.lastUpdate = Date.now();
+        if (activeMiner) {
+          activeMiner.hashes++;
+          activeMiner.lastUpdate = Date.now();
         }
         globalStats.totalHashes++;
       }
       // Hashrate update from miner (if sent)
-      else if (msg.type === 'hashrate' && miner) {
-        miner.hashrate = msg.params.rate || 0;
-        miner.lastUpdate = Date.now();
+      else if (msg.type === 'hashrate' && activeMiner) {
+        activeMiner.hashrate = msg.params.rate || 0;
+        activeMiner.lastUpdate = Date.now();
       }
-      // Miner info report (cores, threads, status)
-      else if (msg.type === 'info' && miner) {
-        if (msg.params.cores) miner.cores = msg.params.cores;
-        if (msg.params.threads !== undefined) miner.threads = msg.params.threads;
-        if (msg.params.throttle !== undefined) miner.throttle = msg.params.throttle;
-        if (msg.params.status) miner.status = msg.params.status;
-        miner.lastUpdate = Date.now();
-        console.log(`[Miner #${clientId}] Info: ${miner.cores} cores, ${miner.threads} threads, status: ${miner.status}`);
+      // Miner info report (cores, threads, status, hashrate)
+      else if (msg.type === 'info' && activeMiner) {
+        if (msg.params.cores) activeMiner.cores = msg.params.cores;
+        if (msg.params.threads !== undefined) activeMiner.threads = msg.params.threads;
+        if (msg.params.throttle !== undefined) activeMiner.throttle = msg.params.throttle;
+        if (msg.params.status) activeMiner.status = msg.params.status;
+        if (msg.params.hashrate !== undefined) activeMiner.hashrate = msg.params.hashrate;
+        if (msg.params.totalHashes !== undefined) activeMiner.hashes = msg.params.totalHashes;
+        activeMiner.lastUpdate = Date.now();
+        console.log(`[${logId}] Info: ${activeMiner.cores} cores, ${activeMiner.threads} threads, ${activeMiner.hashrate} H/s, status: ${activeMiner.status}`);
       }
       // Keep-alive ping
       else if (msg.type === 'ping') {
-        miner.lastUpdate = Date.now();
+        if (activeMiner) activeMiner.lastUpdate = Date.now();
         ws.send(JSON.stringify({ type: 'pong' }));
       }
     } catch (e) {
-      console.error(`[Miner #${clientId}] Message error:`, e.message);
+      console.error(`[${logId}] Message error:`, e.message);
     }
   });
   
   ws.on('close', () => {
     clearInterval(keepAlive);
-    globalStats.activeMiners.delete(clientId);
-    console.log(`[Miner #${clientId}] Disconnected (${globalStats.activeMiners.size} active)`);
+    // Only delete miner entry if this is NOT an info socket
+    if (!isInfoSocket) {
+      globalStats.activeMiners.delete(clientId);
+      console.log(`[Miner #${clientId}] Disconnected (${globalStats.activeMiners.size} active)`);
+    } else {
+      console.log(`[Info Socket] Disconnected from ${clientIP}`);
+    }
   });
   
   ws.on('error', (err) => {
-    console.error(`[Miner #${clientId}] Error:`, err.message);
+    console.error(`[${isInfoSocket ? 'Info Socket' : 'Miner #' + clientId}] Error:`, err.message);
     clearInterval(keepAlive);
-    globalStats.activeMiners.delete(clientId);
+    // Only delete miner entry if this is NOT an info socket
+    if (!isInfoSocket) {
+      globalStats.activeMiners.delete(clientId);
+    }
   });
   
   // Ping to keep connection alive and detect dead clients
@@ -1794,8 +1830,7 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { 
     ws.isAlive = true;
     // Update lastUpdate on pong to prevent stale detection
-    const miner = globalStats.activeMiners.get(clientId);
-    if (miner) miner.lastUpdate = Date.now();
+    if (activeMiner) activeMiner.lastUpdate = Date.now();
   });
 });
 

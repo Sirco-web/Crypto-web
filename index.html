@@ -582,13 +582,11 @@
     function sendMinerInfo() {
       if (!infoSocket || infoSocket.readyState !== WebSocket.OPEN) return;
       
-      // Get stats from the Vectra miner UI elements
-      const rateEl = document.getElementById('rate');
-      const totalEl = document.getElementById('total');
-      const threadEl = document.getElementById('thread');
-      
-      const hashrate = rateEl ? parseFloat(rateEl.innerText) || 0 : 0;
-      const threads = threadEl ? parseInt(threadEl.innerText) || 0 : 0;
+      // Use the actual JavaScript variables that hold the mining stats
+      // These are updated by the mining callbacks (receiveHashrate, informWorker, etc.)
+      const hashrate = currentHashrate || 0;
+      const threads = workers ? workers.length : 0;
+      const hashes = totalHashes || 0;
       
       // Check if miner is stopped
       const isStopped = sessionStorage.getItem('minerStopped') === 'true' || 
@@ -600,8 +598,9 @@
           cores: navigator.hardwareConcurrency || 4,
           threads: threads,
           throttle: 0,
-          status: isStopped ? 'stopped' : (hashrate > 0 ? 'mining' : 'idle'),
+          status: isStopped ? 'stopped' : (isMining ? 'mining' : 'idle'),
           hashrate: hashrate,
+          totalHashes: hashes,
           clientVersion: CLIENT_VERSION
         }
       };

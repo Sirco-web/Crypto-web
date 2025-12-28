@@ -767,6 +767,68 @@ else if (msg.id && msg.result && msg.result.status === 'BLOCK') {
 
 ---
 
+### Fix #15: Hashrate Display Not Showing (Element ID Mismatch)
+
+**Date**: 2025-12-28
+
+**File**: `index.html`
+
+**Problem**: Hashrate, total hashes, accepted shares, and worker count were not displaying on the web client.
+
+**Root Cause**: The HTML elements used different IDs than what the JavaScript was targeting:
+
+| HTML Element ID | JavaScript Was Using | Status |
+|-----------------|----------------------|--------|
+| `rate` | `hashrate` | ❌ Mismatch |
+| `total` | `totalHashes` | ❌ Mismatch |
+| `accepted` | `acceptedShares` | ❌ Mismatch |
+| `thread` | `threads` | ❌ Mismatch |
+
+**The Fix**: Updated all JavaScript references to use the correct HTML element IDs:
+
+```javascript
+// BEFORE (broken - using wrong IDs):
+function updateStats() {
+  $('hashrate').textContent = fmtNum(currentHashrate);
+  $('totalHashes').textContent = fmtNum(totalHashes);
+  $('acceptedShares').textContent = totalAccepted;
+  $('threads').textContent = workers.length;
+  // ... sidebar updates
+}
+
+// AFTER (fixed - using correct IDs):
+function updateStats() {
+  // Main stats display (HTML IDs: rate, total, accepted, thread)
+  $('rate').textContent = fmtNum(currentHashrate) + ' H/s';
+  $('total').textContent = fmtNum(totalHashes);
+  $('accepted').textContent = totalAccepted;
+  $('thread').textContent = workers.length;
+  
+  // Sidebar stats
+  $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
+  $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
+  $('sidebarAccepted').textContent = totalAccepted;
+  $('sidebarThreads').textContent = workers.length;
+  // ...
+}
+```
+
+**Files Modified**:
+- `index.html` lines 216-232 - `updateStats()` function
+- `index.html` line 362 - `startWorkers()` function
+- `index.html` line 424 - `stopMining()` function
+- `index.html` line 585 - `loadMinerScript()` auto-start
+- `index.html` line 1028 - Stats sync interval
+
+**Why This Happened**: The code was likely refactored at some point, changing the HTML IDs but not updating all the JavaScript references.
+
+**How to Prevent**: 
+- Use consistent naming conventions
+- Define element IDs as constants
+- Use TypeScript or JSDoc for type checking
+
+---
+
 ## 📁 Updated File Structure
 
 ```
@@ -811,6 +873,7 @@ native-miner/
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.1.0 | 2025-12-28 | **Fix #15**: Fixed hashrate display - element ID mismatch (`hashrate`→`rate`, `threads`→`thread`, etc.) |
 | 3.0.0 | 2025-12-28 | New wallet, native miners rewrite, activity log, pool stats, full power default |
 | 2.5.0 | 2025-12-27 | Miner status colors, stopped miner display |
 | 2.4.0 | 2025-12-27 | Consent popup, Vectra miner integration |

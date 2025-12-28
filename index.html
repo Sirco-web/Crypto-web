@@ -214,14 +214,19 @@
     }
     
     function updateStats() {
-      $('hashrate').textContent = fmtNum(currentHashrate);
+      // Main stats display (HTML IDs: rate, total, accepted, thread)
+      $('rate').textContent = fmtNum(currentHashrate) + ' H/s';
+      $('total').textContent = fmtNum(totalHashes);
+      $('accepted').textContent = totalAccepted;
+      $('thread').textContent = workers.length;
+      
+      // Sidebar stats
       $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
-      $('totalHashes').textContent = fmtNum(totalHashes);
       $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
-      $('acceptedShares').textContent = totalAccepted;
       $('sidebarAccepted').textContent = totalAccepted;
-      $('threads').textContent = workers.length;
       $('sidebarThreads').textContent = workers.length;
+      
+      // Progress bar
       $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
       $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
     }
@@ -354,7 +359,7 @@
             knowingtogood();
           }
           log('Started ' + numWorkers + ' worker(s)', 'success');
-          $('threads').textContent = numWorkers;
+          $('thread').textContent = numWorkers;
           $('sidebarThreads').textContent = numWorkers;
         } catch (e) {
           log('Error starting miner: ' + e.message, 'error');
@@ -416,7 +421,7 @@
       $('maxBtn').textContent = '⚡ MAX POWER';
       $('status').textContent = 'Stopped';
       $('status').style.color = '#ff4444';
-      $('threads').textContent = '0';
+      $('thread').textContent = '0';
       $('sidebarThreads').textContent = '0';
       if ($('rate')) $('rate').textContent = '0.0 H/s';
       if ($('workerCount')) $('workerCount').textContent = '0';
@@ -577,8 +582,8 @@
             console.log('[Control] Started ' + numWorkers + ' worker(s)');
             isMining = true;
             
-            if (document.getElementById('threads')) {
-              document.getElementById('threads').textContent = numWorkers;
+            if (document.getElementById('thread')) {
+              document.getElementById('thread').textContent = numWorkers;
             }
             if (document.getElementById('sidebarThreads')) {
               document.getElementById('sidebarThreads').textContent = numWorkers;
@@ -1019,8 +1024,7 @@
             if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
         }
         
-        // Also update the main content area workers
-        if(document.getElementById('threads')) document.getElementById('threads').innerText = threads;
+        // Also update the main content area workers (using correct ID: 'thread')
         if(document.getElementById('thread')) {
             // Fix the worker count display - should show actual threads
             const numThreads = parseInt(threads) || 0;

@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.2.2';
+const SERVER_VERSION = '4.2.3';
 const VERSION_DATE = '2025-12-28';
 
 // =============================================================================
@@ -1699,22 +1699,28 @@ wss.on('connection', (ws, req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown';
   const clientId = ++minerId;
   
-  // Check if there's already a miner from this IP (to avoid duplicate entries)
+  // Check URL path to determine if this is an info socket
+  // Info sockets connect to /info, miners connect to /proxy
+  const urlPath = req.url || '/proxy';
+  const isInfoSocket = urlPath.includes('/info');
+  
+  // If this is an info socket, find the most recent miner from this IP to merge with
   let existingMiner = null;
   let existingMinerId = null;
-  for (const [id, miner] of globalStats.activeMiners) {
-    if (miner.ip === clientIP && !id.toString().startsWith('stratum-')) {
-      existingMiner = miner;
-      existingMinerId = id;
-      break;
+  if (isInfoSocket) {
+    for (const [id, miner] of globalStats.activeMiners) {
+      if (miner.ip === clientIP && !id.toString().startsWith('stratum-')) {
+        // Get the most recently connected miner from this IP
+        if (!existingMiner || miner.connected > existingMiner.connected) {
+          existingMiner = miner;
+          existingMinerId = id;
+        }
+      }
     }
   }
   
-  // If there's an existing miner from same IP, this is likely an info socket
-  // We'll mark this connection but not create a new miner entry
-  const isInfoSocket = existingMiner !== null;
-  
   // Detect worker type from user agent
+  let workerType = 'Unknown';
   let workerType = 'Unknown';
   if (userAgent.includes('Python')) {
     workerType = '🐍 Python';
@@ -1734,7 +1740,7 @@ wss.on('connection', (ws, req) => {
     workerType = '🖥️ Desktop';
   }
   
-  // Only create a new miner entry if there isn't one already from this IP
+  // Only create a new miner entry if this is NOT an info socket
   if (!isInfoSocket) {
     globalStats.totalConnections++;
     globalStats.activeMiners.set(clientId, {
@@ -1752,14 +1758,34 @@ wss.on('connection', (ws, req) => {
       throttle: 0,    // Current throttle %
       status: 'starting'  // starting, mining, stopped
     });
-    console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) (${globalStats.activeMiners.size} active)`);
-  } else {
+    console.log(`[Miner #${clientId}] Connected from ${clientIP} (${workerType}) - ${urlPath} (${globalStats.activeMiners.size} active)`);
+  } else if (existingMiner) {
     console.log(`[Info Socket] Connected from ${clientIP} (merging with Miner #${existingMinerId})`);
+  } else {
+    console.log(`[Info Socket] Connected from ${clientIP} (no miner to merge with - creating new entry)`);
+    // Create a new entry for orphan info sockets
+    globalStats.totalConnections++;
+    globalStats.activeMiners.set(clientId, {
+      id: clientId,
+      ip: clientIP,
+      ws: ws,
+      hashrate: 0,
+      hashes: 0,
+      connected: Date.now(),
+      lastUpdate: Date.now(),
+      workerType: workerType,
+      userAgent: userAgent.slice(0, 50),
+      cores: 0,
+      threads: 0,
+      throttle: 0,
+      status: 'starting'
+    });
   }
   
-  // Get the miner object (either new or existing)
-  const miner = isInfoSocket ? existingMiner : globalStats.activeMiners.get(clientId);
-  const effectiveClientId = isInfoSocket ? existingMinerId : clientId;
+  // Get the miner object (either new or existing for merged info sockets)
+  // For orphan info sockets (no existing miner to merge with), use the new entry we created
+  const miner = (isInfoSocket && existingMiner) ? existingMiner : globalStats.activeMiners.get(clientId);
+  const effectiveClientId = (isInfoSocket && existingMiner) ? existingMinerId : clientId;
   
   // Ensure pool is connected
   if (!sharedPool) {
@@ -1794,10 +1820,10 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
-      // For info sockets, use the existing miner from same IP
-      // For regular miners, use their own entry
-      const activeMiner = isInfoSocket ? existingMiner : globalStats.activeMiners.get(clientId);
-      const logId = isInfoSocket ? `Info->Miner #${existingMinerId}` : `Miner #${clientId}`;
+      // For merged info sockets, use the existing miner
+      // For regular miners and orphan info sockets, use their own entry
+      const activeMiner = (isInfoSocket && existingMiner) ? existingMiner : globalStats.activeMiners.get(clientId);
+      const logId = (isInfoSocket && existingMiner) ? `Info->Miner #${existingMinerId}` : `Miner #${clientId}`;
       
       // Update lastUpdate on ANY message to prevent stale detection
       if (activeMiner) activeMiner.lastUpdate = Date.now();
@@ -1863,8 +1889,8 @@ wss.on('connection', (ws, req) => {
   
   ws.on('close', () => {
     clearInterval(keepAlive);
-    // Only delete miner entry if this is NOT an info socket
-    if (!isInfoSocket) {
+    // Only delete miner entry if this is NOT an info socket (or is orphan info socket that created its own entry)
+    if (!isInfoSocket || !existingMiner) {
       globalStats.activeMiners.delete(clientId);
       console.log(`[Miner #${clientId}] Disconnected (${globalStats.activeMiners.size} active)`);
     } else {
@@ -1873,10 +1899,10 @@ wss.on('connection', (ws, req) => {
   });
   
   ws.on('error', (err) => {
-    console.error(`[${isInfoSocket ? 'Info Socket' : 'Miner #' + clientId}] Error:`, err.message);
+    console.error(`[${isInfoSocket && existingMiner ? 'Info Socket' : 'Miner #' + clientId}] Error:`, err.message);
     clearInterval(keepAlive);
-    // Only delete miner entry if this is NOT an info socket
-    if (!isInfoSocket) {
+    // Only delete miner entry if this is NOT an info socket (or is orphan info socket)
+    if (!isInfoSocket || !existingMiner) {
       globalStats.activeMiners.delete(clientId);
     }
   });

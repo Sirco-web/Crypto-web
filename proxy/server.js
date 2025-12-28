@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.1.7';
+const SERVER_VERSION = '4.2.1';
 const VERSION_DATE = '2025-12-27';
 
 // =============================================================================
@@ -679,6 +679,19 @@ function handlePoolMessage(msg) {
       handleIPSuspension();
     }
     
+    // Check for Unauthenticated - need to re-login to pool
+    if (msg.error.message && msg.error.message.includes('Unauthenticated')) {
+      console.log('[Pool] ⚠️ Session expired - reconnecting to pool...');
+      poolAuthenticated = false;
+      poolWorkerId = null;
+      // Reconnect
+      if (sharedPool) {
+        sharedPool.destroy();
+        sharedPool = null;
+      }
+      setTimeout(connectToPool, 1000);
+    }
+    
     broadcastToMiners({ type: 'error', params: { error: msg.error.message } });
   }
 }
@@ -745,11 +758,12 @@ function broadcastJob(job) {
   if (!job) return;
   jobsBroadcast++;  // Increment job counter
   
-  // Override target for easier testing (10x easier = difficulty ~1000)
-  // Original target is ~10000 difficulty, we make it ~1000
+  // Override target for easier share finding for web miners
+  // Pool port 10001 gives ~10000 difficulty which is too hard for browsers
+  // We lower it to ~500 difficulty for faster feedback
   // target = 0xFFFFFFFF / difficulty (in little-endian hex)
-  // For diff 1000: 0xFFFFFFFF / 1000 = 4294967 = 0x418937 -> little-endian: "3789410000000000"
-  const easyTarget = '37894100';  // ~1000 difficulty for faster share finding
+  // For diff 500: 0xFFFFFFFF / 500 = 8589934 = 0x8312E7 -> little-endian: "e7128300"
+  const easyTarget = 'e7128300';  // ~500 difficulty for much faster share finding
   
   const msg = {
     type: 'job',
@@ -763,14 +777,11 @@ function broadcastJob(job) {
       algo: job.algo || 'rx/0'
     }
   };
-  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job to miners:`, JSON.stringify({
+  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job (diff ~500):`, JSON.stringify({
     job_id: msg.params.job_id,
-    blob: msg.params.blob ? 'present' : 'MISSING',
     target: msg.params.target,
     originalTarget: job.target,
-    seed_hash: msg.params.seed_hash ? 'present' : 'MISSING',
-    height: msg.params.height,
-    algo: msg.params.algo
+    height: msg.params.height
   }));
   
   // Broadcast to WebSocket miners

@@ -1,5 +1,5 @@
 // =============================================================================
-// RANDOMX WEB MINER v3.9.4 - Demo-Compatible Implementation
+// RANDOMX WEB MINER v3.9.2 - Demo-Compatible Implementation
 // =============================================================================
 // Mirrors the Vectra demo structure exactly for proven working RandomX mining
 // Uses web-randomx.wasm for actual RandomX hashing
@@ -67,8 +67,7 @@
 
 const BASE_URL = '${BASE_URL}';
 
-// NOTE: Do NOT declare Module here - it will be defined by importScripts(web-randomx.js)
-let RandomXModule = null;  // Our reference to the initialized module
+let Module = null;
 let input = null;
 let output = null;
 let seedInput = null;
@@ -97,7 +96,6 @@ async function initModule() {
     console.log('[Worker] WASM binary loaded:', wasmBuffer.byteLength, 'bytes');
     
     // Use importScripts to load the JS module (works in workers with absolute URLs)
-    // This will define 'Module' as a global variable (factory function)
     importScripts(BASE_URL + 'web-randomx.js');
     console.log('[Worker] JS module loaded, Module type:', typeof Module);
     
@@ -109,8 +107,9 @@ async function initModule() {
     // Store reference to factory function
     const moduleFactory = Module;
     
-    // Call factory function with options to initialize
-    RandomXModule = await moduleFactory({
+    // Module is now available as a global - it's a factory function
+    // Call it with options to initialize
+    const moduleInstance = await moduleFactory({
       wasmBinary: wasmBuffer,
       locateFile(path) {
         if (path.endsWith('.wasm')) {
@@ -120,19 +119,22 @@ async function initModule() {
       }
     });
     
-    console.log('[Worker] Module initialized, checking exports...');
-    console.log('[Worker] _malloc:', typeof RandomXModule._malloc);
-    console.log('[Worker] _randomx_hash:', typeof RandomXModule._randomx_hash);
-    console.log('[Worker] HEAPU8:', typeof RandomXModule.HEAPU8);
+    // Use the instance returned by the factory
+    Module = moduleInstance;
     
-    if (!RandomXModule._malloc || !RandomXModule._randomx_hash || !RandomXModule.HEAPU8) {
+    console.log('[Worker] Module initialized, checking exports...');
+    console.log('[Worker] _malloc:', typeof Module._malloc);
+    console.log('[Worker] _randomx_hash:', typeof Module._randomx_hash);
+    console.log('[Worker] HEAPU8:', typeof Module.HEAPU8);
+    
+    if (!Module._malloc || !Module._randomx_hash || !Module.HEAPU8) {
       throw new Error('Missing required WASM exports');
     }
     
     // Allocate memory buffers (exactly like demo's wrapper.js)
-    input = new Uint8Array(RandomXModule.HEAPU8.buffer, RandomXModule._malloc(256), 256);
-    output = new Uint8Array(RandomXModule.HEAPU8.buffer, RandomXModule._malloc(32), 32);
-    seedInput = new Uint8Array(RandomXModule.HEAPU8.buffer, RandomXModule._malloc(32), 32);
+    input = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(256), 256);
+    output = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
+    seedInput = new Uint8Array(Module.HEAPU8.buffer, Module._malloc(32), 32);
     
     isReady = true;
     
@@ -250,7 +252,7 @@ function now() {
 // Perform one hash (exactly like demo's wrapper.js)
 function hash() {
   // Check if buffers are initialized
-  if (!input || !output || !seedInput || !RandomXModule || !RandomXModule._randomx_hash) {
+  if (!input || !output || !seedInput || !Module || !Module._randomx_hash) {
     console.error('[Worker] hash: WASM not properly initialized');
     return 0;
   }
@@ -263,7 +265,7 @@ function hash() {
   input[42] = (255 & nonce) >> 0;
   
   // Call RandomX hash function (exactly like demo)
-  return RandomXModule._randomx_hash(
+  return Module._randomx_hash(
     BigInt(height),
     BigInt(height),
     seedInput.byteOffset,
@@ -711,7 +713,7 @@ initModule();
   window.getHashesPerSecond = getHashesPerSecond;
   window.getTotalHashes = getTotalHashes;
   
-  console.log('[Miner] RandomX Miner v3.9.4 loaded (demo-compatible)');
+  console.log('[Miner] RandomX Miner v3.9.2 loaded (demo-compatible)');
   console.log('[Miner] Base URL:', BASE_URL);
   console.log('[Miner] Proxy:', config.proxy);
   console.log('[Miner] Pool:', config.pool);

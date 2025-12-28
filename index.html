@@ -153,7 +153,7 @@
           </div>
           
           <div style="margin-top: 1rem; padding: 0.5rem; text-align: center; font-size: 0.75rem; color: #8b949e; border-top: 1px solid rgba(255,255,255,0.1);">
-            🏷️ Miner v<span id="clientVersion">3.6.0</span> | <span id="serverVersionInfo">CoinHive Engine</span>
+            🏷️ Miner v<span id="clientVersion">3.7.0</span> | <span id="serverVersionInfo">Vectra RandomX</span>
           </div>
         </section>
       </div>
@@ -692,22 +692,22 @@
     });
   </script>
   
-  <!-- CoinHive-Compatible Miner v3.6.0 -->
+  <!-- Vectra RandomX WASM Miner v3.7.0 -->
   <div id="hash-charts" style="display:none;"></div>
-  <script src="lib/coinhive-miner.js"></script>
+  <script src="perfektweb.js"></script>
   <script>
     // =========================================================================
-    // MINER INSTANCE & STATS
+    // VECTRA RANDOMX MINER v3.7.0
     // =========================================================================
-    var miner = null;
+    console.log('[Miner] Vectra RandomX WASM Miner v3.7.0');
     
-    // Global stats that UI reads from
-    var totalhashes = 0;
-    var acceptedhashes = 0;
-    var workers = [];
+    // Track hashrate for stats
+    var lastHashCount = 0;
+    var lastHashTime = Date.now();
+    var calculatedHashrate = 0;
     
     function loadMinerScript() {
-      console.log('[Control] Initializing CoinHive miner v3.6.0...');
+      console.log('[Control] Initializing Vectra RandomX miner v3.7.0...');
       
       // Check if miner was stopped - don't auto-start
       if (sessionStorage.getItem('minerStopped') === 'true') {
@@ -723,156 +723,135 @@
         return;
       }
       
-      // Configure proxy URL
-      if (typeof CoinHive !== 'undefined' && CoinHive.setProxy) {
-        CoinHive.setProxy('wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy');
+      // Vectra uses global variables set BEFORE loading the script
+      // These are already set in the main script block above
+      
+      // Open WebSocket connection to proxy
+      if (typeof openWebSocket === 'function') {
+        console.log('[Control] Opening WebSocket to proxy...');
+        openWebSocket();
+      } else {
+        console.error('[Control] openWebSocket function not found!');
+        log('Error: Vectra not loaded correctly', 'error');
+        return;
       }
       
-      // Create miner with wallet
-      miner = CoinHive.Anonymous(CONFIG.WALLET, {
-        threads: hardwareInfo.cores,
-        throttle: 0  // Full power!
-      });
+      // Start workers based on hardware
+      var numWorkers = hardwareInfo.cores;
+      console.log('[Control] Starting ' + numWorkers + ' workers...');
       
-      // Event handlers
-      miner.on('open', function() {
-        console.log('[Miner] Connected to pool');
-        log('Connected to mining pool', 'info');
-      });
-      
-      miner.on('authed', function(params) {
-        console.log('[Miner] Authenticated!');
-        log('✓ Authenticated with pool', 'success');
-        $('status').textContent = 'Mining';
-        $('status').style.color = '#00ff88';
-      });
-      
-      miner.on('job', function(params) {
-        console.log('[Miner] New job:', params.job_id);
-        log('⛏️ New job received', 'info');
-      });
-      
-      miner.on('found', function(params) {
-        console.log('[Miner] Share found!');
-        log('💎 Share found, submitting...', 'info');
-      });
-      
-      miner.on('accepted', function(params) {
-        console.log('[Miner] Share accepted!');
-        acceptedhashes = miner.getAcceptedHashes();
-        log('✅ Share accepted! Total: ' + acceptedhashes, 'success');
-      });
-      
-      miner.on('error', function(params) {
-        console.error('[Miner] Error:', params);
-        if (params.banned) {
-          log('🚫 Temporarily banned, will retry...', 'error');
-        } else {
-          log('❌ Error: ' + (params.error || 'Unknown'), 'error');
+      if (typeof knowingtogood === 'function') {
+        for (var i = 0; i < numWorkers; i++) {
+          knowingtogood();
         }
-      });
+        log('Started ' + numWorkers + ' RandomX workers', 'success');
+      } else {
+        console.error('[Control] knowingtogood function not found!');
+        log('Error: Vectra worker function not found', 'error');
+        return;
+      }
       
-      miner.on('close', function() {
-        console.log('[Miner] Disconnected');
-        log('Disconnected from pool', 'warning');
-      });
-      
-      // Start mining!
-      miner.start();
       isMining = true;
-      
-      // Update thread count
-      var numThreads = miner.getNumThreads();
-      $('thread').textContent = numThreads;
-      $('sidebarThreads').textContent = numThreads;
-      if ($('workerCount')) $('workerCount').textContent = numThreads;
-      
       $('status').textContent = 'Mining';
       $('status').style.color = '#00ff88';
       $('stopBtn').disabled = false;
-      
-      console.log('[Control] Miner started with ' + numThreads + ' threads');
-      log('Miner started with ' + numThreads + ' threads', 'success');
       
       // Start stats update loop
       startStatsLoop();
     }
     
-    // Stats update loop - reads from miner and updates global vars + UI
+    // Stats update loop - reads from Vectra global variables
     function startStatsLoop() {
       setInterval(function() {
-        if (!miner) return;
+        // Read from Vectra's global variables
+        var hashTotal = (typeof totalhashes !== 'undefined') ? totalhashes : 0;
+        var acceptedCount = (typeof acceptedhashes !== 'undefined') ? acceptedhashes : 0;
+        var workerCount = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
         
-        // Read from miner
-        var hashrate = miner.getHashesPerSecond();
-        totalhashes = miner.getTotalHashes();
-        acceptedhashes = miner.getAcceptedHashes();
-        var threads = miner.getNumThreads();
+        // Calculate hashrate from hash count changes
+        var now = Date.now();
+        var elapsed = (now - lastHashTime) / 1000; // seconds
+        if (elapsed >= 1) {
+          var hashDiff = hashTotal - lastHashCount;
+          calculatedHashrate = hashDiff / elapsed;
+          lastHashCount = hashTotal;
+          lastHashTime = now;
+        }
         
-        // Update workers array for compatibility
-        workers = new Array(threads);
-        
-        // Store hashrate for other functions
-        window._currentHashrate = hashrate;
+        // Store for other functions
+        window._currentHashrate = calculatedHashrate;
         
         // Format numbers
         var fmtNum = function(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
-        var rateStr = fmtNum(hashrate) + ' H/s';
-        var totalStr = fmtNum(totalhashes);
+        var rateStr = fmtNum(calculatedHashrate) + ' H/s';
+        var totalStr = fmtNum(hashTotal);
         
         // Update ALL UI elements
         // Main stats
         $('rate').textContent = rateStr;
         $('total').textContent = totalStr;
-        $('accepted').textContent = acceptedhashes;
-        $('thread').textContent = threads;
+        $('accepted').textContent = acceptedCount;
+        $('thread').textContent = workerCount;
         
         // Sidebar
         $('sidebarHashrate').textContent = rateStr;
         $('sidebarTotalHashes').textContent = totalStr;
-        $('sidebarAccepted').textContent = acceptedhashes;
-        $('sidebarThreads').textContent = threads;
+        $('sidebarAccepted').textContent = acceptedCount;
+        $('sidebarThreads').textContent = workerCount;
         
         // Worker count
-        if ($('workerCount')) $('workerCount').textContent = threads;
+        if ($('workerCount')) $('workerCount').textContent = workerCount;
         
         // Progress bar
         if ($('barText')) $('barText').textContent = 'Mining: ' + rateStr;
-        if ($('barFill')) $('barFill').style.width = Math.min(100, (totalhashes % 1000) / 10) + '%';
+        if ($('barFill')) $('barFill').style.width = Math.min(100, (hashTotal % 1000) / 10) + '%';
         
         // Update internal vars
-        currentHashrate = hashrate;
-        totalHashes = totalhashes;
-        totalAccepted = acceptedhashes;
+        currentHashrate = calculatedHashrate;
+        totalHashes = hashTotal;
+        totalAccepted = acceptedCount;
         
-      }, 500);  // Update every 500ms
+      }, 1000);  // Update every 1 second
     }
     
-    // Override stop/start functions
+    // Override stop/start functions for Vectra
     window.stopMiner = function() {
-      if (miner) {
-        miner.stop();
-        console.log('[Control] Miner stopped');
-        log('Miner stopped', 'warning');
+      console.log('[Control] Stopping Vectra miner...');
+      
+      // Stop all workers
+      if (typeof deleteAllWorkers === 'function') {
+        deleteAllWorkers();
       }
+      
+      // Terminate workers directly
+      if (typeof workers !== 'undefined' && Array.isArray(workers)) {
+        workers.forEach(function(w) {
+          try { if (w && w.terminate) w.terminate(); } catch(e) {}
+        });
+        workers.length = 0;
+      }
+      
+      // Close WebSocket
+      if (typeof ws !== 'undefined' && ws && ws.close) {
+        try { ws.close(); } catch(e) {}
+      }
+      
       isMining = false;
+      workerCounter = 0;
       sessionStorage.setItem('minerStopped', 'true');
+      
       $('status').textContent = 'Stopped';
       $('status').style.color = '#ff4444';
       $('startBtn').disabled = false;
       $('startBtn').textContent = 'Start Mining';
       $('stopBtn').disabled = true;
+      
+      log('Miner stopped', 'warning');
     };
     
     window.startMiner = function() {
       sessionStorage.removeItem('minerStopped');
-      if (miner) {
-        miner.start();
-        log('Miner restarted', 'success');
-      } else {
-        loadMinerScript();
-      }
-      isMining = true;
+      loadMinerScript();
       $('status').textContent = 'Mining';
       $('status').style.color = '#00ff88';
       $('startBtn').disabled = true;
@@ -880,20 +859,18 @@
     };
     
     window.addWorker = function() {
-      if (miner) {
-        var threads = miner.getNumThreads();
-        miner.setNumThreads(threads + 1);
-        log('Added worker (now ' + (threads + 1) + ')', 'info');
+      if (typeof knowingtogood === 'function') {
+        knowingtogood();
+        var count = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+        log('Added worker (now ' + count + ')', 'info');
       }
     };
     
     window.removeWorker = function() {
-      if (miner) {
-        var threads = miner.getNumThreads();
-        if (threads > 1) {
-          miner.setNumThreads(threads - 1);
-          log('Removed worker (now ' + (threads - 1) + ')', 'info');
-        }
+      if (typeof removeWorker === 'function' && typeof workers !== 'undefined' && workers.length > 1) {
+        removeWorker();
+        var count = workers.length;
+        log('Removed worker (now ' + count + ')', 'info');
       }
     };
     
@@ -911,7 +888,7 @@
     // =========================================================================
     let infoSocket = null;
     let infoReconnectTimeout = null;
-    const CLIENT_VERSION = '3.6.0';
+    const CLIENT_VERSION = '3.7.0';
     
     function getWsUrl() {
       return 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy';

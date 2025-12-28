@@ -170,6 +170,9 @@
     var scriptTag = document.currentScript;
     var workers = [];
     var workerCounter = 0;
+    // These will be overwritten by perfektweb.js but we initialize them for safe access
+    var totalhashes = 0;
+    var acceptedhashes = 0;
     
     // =========================================================================
     // PROXY/POOL CONFIGURATION
@@ -214,21 +217,32 @@
     }
     
     function updateStats() {
+      // Read directly from perfektweb.js global variables
+      const workerCount = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+      const hashTotal = (typeof totalhashes !== 'undefined') ? totalhashes : 0;
+      const acceptedCount = (typeof acceptedhashes !== 'undefined') ? acceptedhashes : 0;
+      const hashRate = window._currentHashrate || 0;
+      
       // Main stats display (HTML IDs: rate, total, accepted, thread)
-      $('rate').textContent = fmtNum(currentHashrate) + ' H/s';
-      $('total').textContent = fmtNum(totalHashes);
-      $('accepted').textContent = totalAccepted;
-      $('thread').textContent = workers.length;
+      $('rate').textContent = fmtNum(hashRate) + ' H/s';
+      $('total').textContent = fmtNum(hashTotal);
+      $('accepted').textContent = acceptedCount;
+      $('thread').textContent = workerCount;
       
       // Sidebar stats
-      $('sidebarHashrate').textContent = fmtNum(currentHashrate) + ' H/s';
-      $('sidebarTotalHashes').textContent = fmtNum(totalHashes);
-      $('sidebarAccepted').textContent = totalAccepted;
-      $('sidebarThreads').textContent = workers.length;
+      $('sidebarHashrate').textContent = fmtNum(hashRate) + ' H/s';
+      $('sidebarTotalHashes').textContent = fmtNum(hashTotal);
+      $('sidebarAccepted').textContent = acceptedCount;
+      $('sidebarThreads').textContent = workerCount;
       
       // Progress bar
-      $('barFill').style.width = ((totalHashes % 1000) / 10) + '%';
-      $('barText').textContent = 'Mining: ' + fmtNum(currentHashrate) + ' H/s';
+      $('barFill').style.width = ((hashTotal % 1000) / 10) + '%';
+      $('barText').textContent = 'Mining: ' + fmtNum(hashRate) + ' H/s';
+      
+      // Update internal variables
+      currentHashrate = hashRate;
+      totalHashes = hashTotal;
+      totalAccepted = acceptedCount;
     }
     
     // =========================================================================
@@ -998,41 +1012,71 @@
     // =========================================================================
     // SYNC VECTRA STATS TO SIDEBAR
     // =========================================================================
+    // This interval reads directly from perfektweb.js global variables
+    // and updates ALL stat displays
     setInterval(() => {
-        const rateElement = document.getElementById('rate');
-        const totalElement = document.getElementById('total');
-        const acceptedElement = document.getElementById('accepted');
-        const threadElement = document.getElementById('thread');
+        // Read from perfektweb.js globals (workers, totalhashes, acceptedhashes)
+        const workerCount = (typeof workers !== 'undefined' && Array.isArray(workers)) ? workers.length : 0;
+        const totalHashCount = (typeof totalhashes !== 'undefined') ? totalhashes : 0;
+        const acceptedCount = (typeof acceptedhashes !== 'undefined') ? acceptedhashes : 0;
         
-        const rate = rateElement ? rateElement.innerText : '0 H/s';
-        const total = totalElement ? totalElement.innerText : '0';
-        const accepted = acceptedElement ? acceptedElement.innerText : '0';
-        const threads = threadElement ? threadElement.innerText : '0';
+        // Calculate hashrate from hash count change
+        if (typeof window._lastTotalHashes === 'undefined') {
+            window._lastTotalHashes = totalHashCount;
+            window._lastHashTime = Date.now();
+        }
         
-        if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rate;
-        if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = total;
-        if(document.getElementById('sidebarAccepted')) document.getElementById('sidebarAccepted').innerText = accepted;
-        if(document.getElementById('sidebarThreads')) document.getElementById('sidebarThreads').innerText = threads;
+        const now = Date.now();
+        const timeDiff = (now - window._lastHashTime) / 1000; // seconds
+        let hashRate = 0;
         
-        // Update status
-        if(parseFloat(rate) > 0) {
+        if (timeDiff >= 1) {
+            const hashDiff = totalHashCount - window._lastTotalHashes;
+            hashRate = hashDiff / timeDiff;
+            window._lastTotalHashes = totalHashCount;
+            window._lastHashTime = now;
+            // Store for other functions
+            window._currentHashrate = hashRate;
+        } else {
+            hashRate = window._currentHashrate || 0;
+        }
+        
+        // Format numbers
+        const fmtNum = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        const rateStr = fmtNum(hashRate) + ' H/s';
+        const totalStr = fmtNum(totalHashCount);
+        
+        // Update main stats grid (IDs: rate, total, accepted, thread)
+        if(document.getElementById('rate')) document.getElementById('rate').innerText = rateStr;
+        if(document.getElementById('total')) document.getElementById('total').innerText = totalStr;
+        if(document.getElementById('accepted')) document.getElementById('accepted').innerText = acceptedCount;
+        if(document.getElementById('thread')) document.getElementById('thread').innerText = workerCount;
+        
+        // Update sidebar stats
+        if(document.getElementById('sidebarHashrate')) document.getElementById('sidebarHashrate').innerText = rateStr;
+        if(document.getElementById('sidebarTotalHashes')) document.getElementById('sidebarTotalHashes').innerText = totalStr;
+        if(document.getElementById('sidebarAccepted')) document.getElementById('sidebarAccepted').innerText = acceptedCount;
+        if(document.getElementById('sidebarThreads')) document.getElementById('sidebarThreads').innerText = workerCount;
+        
+        // Update worker count display
+        if(document.getElementById('workerCount')) document.getElementById('workerCount').innerText = workerCount;
+        
+        // Update status and progress bar
+        if(hashRate > 0 || workerCount > 0) {
             if(document.getElementById('status')) {
                 document.getElementById('status').innerText = 'Mining';
                 document.getElementById('status').style.color = '#00ff88';
             }
-            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rate;
-            if(document.getElementById('barFill')) document.getElementById('barFill').style.width = '100%';
+            if(document.getElementById('barText')) document.getElementById('barText').innerText = 'Mining: ' + rateStr;
+            if(document.getElementById('barFill')) document.getElementById('barFill').style.width = Math.min(100, (totalHashCount % 1000) / 10) + '%';
         }
         
-        // Also update the main content area workers (using correct ID: 'thread')
-        if(document.getElementById('thread')) {
-            // Fix the worker count display - should show actual threads
-            const numThreads = parseInt(threads) || 0;
-            if (numThreads > 0) {
-                document.getElementById('thread').innerText = numThreads;
-            }
-        }
-    }, 1000);
+        // Update internal variables for other functions
+        currentHashrate = hashRate;
+        totalHashes = totalHashCount;
+        totalAccepted = acceptedCount;
+        
+    }, 500);  // Run every 500ms for smoother updates
   </script>
 </body>
 </html>

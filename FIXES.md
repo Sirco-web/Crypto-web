@@ -881,3 +881,32 @@ native-miner/
 | 1.0.0 | 2025-12-27 | Initial proxy server |
 
 ---
+
+### Fix #16: Stats Not Displaying - Variables Never Updated from Miner Globals
+
+**Date**: 2025-12-28
+
+**File**: `index.html`
+
+**Problem**: Even after Fix #15, stats (hashrate, total hashes, accepted shares, worker count) still showed as 0.
+
+**Root Cause**: The index.html used LOCAL JavaScript variables (`currentHashrate`, `totalHashes`, `totalAccepted`) that were NEVER updated from perfektweb.js GLOBAL variables (`totalhashes`, `acceptedhashes`, `workers`).
+
+**The Disconnect**:
+| perfektweb.js Global | index.html Local | Issue |
+|---------------------|------------------|-------|
+| `totalhashes` | `totalHashes` | Different variable names, never connected |
+| `acceptedhashes` | `totalAccepted` | Different variable names, never connected |
+| `workers` (array) | Used `workers.length` | OK if same variable |
+
+**The Fix**:
+1. Added initialization of `totalhashes` and `acceptedhashes` globals
+2. Rewrote `updateStats()` to read directly from perfektweb.js globals
+3. Rewrote sync interval to calculate hashrate from hash count changes over time
+
+**Files Modified**:
+- `index.html` line 171-172 - Added global initialization
+- `index.html` lines 217-244 - Rewrote `updateStats()`
+- `index.html` lines 1012-1069 - Rewrote sync interval with hashrate calculation
+
+---

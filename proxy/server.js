@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.9';
+const SERVER_VERSION = '4.4.0';
 const VERSION_DATE = '2025-12-30';
 
 // =============================================================================
@@ -566,6 +566,7 @@ const globalStats = {
   totalShares: 0,
   acceptedShares: 0,
   rejectedShares: 0,
+  filteredShares: 0,  // Shares that didn't meet pool difficulty (not submitted)
   blocksFound: 0,
   
   // Current combined hashrate (calculated from all miners)
@@ -919,8 +920,39 @@ function submitToPool(params, minerId = null) {
     return { submitted: false, reason: 'stale_job' };
   }
   
-  // Just submit it! Let the pool decide if it's good or not
-  console.log('[Pool] ✓ Submitting share to pool...');
+  // CRITICAL: Validate share meets pool's difficulty BEFORE submitting
+  // This prevents spam submitting low-difficulty shares that get rejected
+  const job = recentJobs.get(params.job_id);
+  const poolTarget = job.target;
+  const hashResult = params.result;
+  
+  if (!hashResult || hashResult.length < 8) {
+    console.log('[Pool] ❌ Invalid hash result');
+    return { submitted: false, reason: 'invalid_hash' };
+  }
+  
+  // Compare the LAST 8 chars of hash with pool target (little-endian comparison)
+  // In RandomX, the target is compared against the last 4 bytes of the 32-byte hash
+  // The hash result is 64 hex chars (32 bytes), we need the last 8 hex chars
+  const hashTail = hashResult.slice(-8);  // Last 4 bytes as hex
+  
+  // Convert to numbers for comparison (reverse byte order for little-endian)
+  // Pool target format: "b88d0600" needs to be compared properly
+  const hashValue = parseInt(hashTail.match(/../g).reverse().join(''), 16);
+  const targetValue = parseInt(poolTarget.match(/../g).reverse().join(''), 16);
+  
+  // For valid share: hash value must be LESS than target value
+  if (hashValue >= targetValue) {
+    // This is a low-difficulty share - don't submit to pool
+    globalStats.filteredShares++;
+    console.log(`[Pool] ⚡ Share filtered (${globalStats.filteredShares} total) - below pool difficulty`);
+    // Still count it locally for the worker's stats
+    return { submitted: false, reason: 'low_difficulty', local: true };
+  }
+  
+  // Share meets pool difficulty - submit it!
+  console.log('[Pool] ✓ Share meets pool difficulty, submitting...');
+  console.log(`[Pool]    Hash: ${hashTail} < Target: ${poolTarget} ✓`);
   
   const msg = {
     id: Date.now(),

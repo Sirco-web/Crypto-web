@@ -14,8 +14,8 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.0';
-const VERSION_DATE = '2025-12-28';
+const SERVER_VERSION = '4.3.1';
+const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
 // ACTIVITY LOG - Track shares, blocks, events
@@ -1606,7 +1606,9 @@ let controlClientId = 0;
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   
-  if (url.pathname === '/proxy' || url.pathname === '/ws') {
+  // Accept /proxy, /ws, and /info for miner connections
+  // /info is used for stats reporting socket (merges with existing miner)
+  if (url.pathname === '/proxy' || url.pathname === '/ws' || url.pathname === '/info') {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });

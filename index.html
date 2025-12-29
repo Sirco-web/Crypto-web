@@ -295,7 +295,12 @@
             if (e.params && e.params.pool) {
               proxyPoolConfig = e.params.pool;
               const poolInfo = proxyPoolConfig.host + ':' + proxyPoolConfig.port;
-              log('📡 Pool: ' + poolInfo + ' (diff: ' + proxyPoolConfig.difficulty + ')', 'info');
+              // Show pool difficulty and worker's individual difficulty
+              const poolDiff = proxyPoolConfig.poolDifficulty || proxyPoolConfig.difficulty || '?';
+              const workerDiff = proxyPoolConfig.workerDifficulty || '?';
+              const combinedDiff = proxyPoolConfig.combinedDifficulty || '?';
+              log('📡 Pool: ' + poolInfo, 'info');
+              log('🎯 Pool diff: ' + poolDiff + ' | Your diff: ' + workerDiff + ' | Combined: ' + combinedDiff, 'info');
               console.log('[Miner] Pool config from proxy:', proxyPoolConfig);
             }
             break;

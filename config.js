@@ -23,5 +23,5 @@ const CONFIG = {
   ALGORITHM: 'rx/0',
   
   // Version info
-  VERSION: '4.3.5'
+  VERSION: '4.3.6'
 };

@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.5';
+const SERVER_VERSION = '4.3.6';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -364,20 +364,71 @@ function sendStratumCommand(minerId, action) {
   return false;
 }
 
-// Calculate optimal difficulty based on combined hashrate
-// Target: 1 share every 30-45 seconds
+// =============================================================================
+// PER-WORKER DIFFICULTY TRACKING
+// Each worker has their own "virtual" difficulty based on their hashrate
+// Pool difficulty is set to the MINIMUM so all workers can submit shares
+// =============================================================================
+
+// Calculate per-worker difficulty (what difficulty WOULD be ideal for this worker)
+function calculateWorkerDifficulty(hashrate) {
+  if (hashrate < 1) return 1000;  // Minimum
+  const targetSeconds = 30;  // Target 1 share per 30 seconds
+  return Math.max(1000, Math.round(hashrate * targetSeconds));
+}
+
+// Calculate pool difficulty - use MINIMUM worker hashrate so all workers can submit
+// This ensures even the weakest worker can find shares
+function calculatePoolDifficulty() {
+  let minHashrate = Infinity;
+  let hasWorkers = false;
+  
+  for (const miner of globalStats.activeMiners.values()) {
+    if (miner.hashrate && miner.hashrate > 0) {
+      hasWorkers = true;
+      minHashrate = Math.min(minHashrate, miner.hashrate);
+    }
+  }
+  
+  if (!hasWorkers || minHashrate === Infinity) {
+    return 1000;  // Default minimum
+  }
+  
+  // Use minimum worker's hashrate × 30s, but cap at reasonable level
+  // This ensures weakest worker gets ~1 share per 30s
+  const targetSeconds = 30;
+  let diff = Math.round(minHashrate * targetSeconds);
+  
+  // Clamp: min 1000, max 50000 (don't go too high even for fast miners)
+  return Math.max(1000, Math.min(diff, 50000));
+}
+
+// Calculate combined difficulty (sum of all worker difficulties for display)
+function calculateCombinedDifficulty() {
+  let total = 0;
+  for (const miner of globalStats.activeMiners.values()) {
+    total += calculateWorkerDifficulty(miner.hashrate || 0);
+  }
+  return total || 1000;
+}
+
+// Get all worker difficulties for display
+function getWorkerDifficulties() {
+  const workers = [];
+  for (const [id, miner] of globalStats.activeMiners) {
+    workers.push({
+      id: id,
+      hashrate: miner.hashrate || 0,
+      difficulty: calculateWorkerDifficulty(miner.hashrate || 0),
+      workerType: miner.workerType || 'Unknown'
+    });
+  }
+  return workers;
+}
+
+// Legacy function for compatibility - now uses pool difficulty
 function calculateOptimalDifficulty() {
-  const hashrate = globalStats.combinedHashrate || 0;
-  if (hashrate < 1) return 1000;  // Minimum difficulty
-  
-  // difficulty = hashrate * target_seconds
-  const targetSeconds = 30;  // 1 share per 30 seconds
-  let optimalDiff = Math.round(hashrate * targetSeconds);
-  
-  // Clamp to reasonable range
-  optimalDiff = Math.max(1000, Math.min(optimalDiff, 500000));
-  
-  return optimalDiff;
+  return calculatePoolDifficulty();
 }
 
 // Get optimal port based on difficulty
@@ -466,32 +517,40 @@ setInterval(() => {
 // Track last used difficulty for auto-adjustment
 let lastUsedDifficulty = 10000;
 
-// Auto-adjust difficulty every 30 seconds when in auto mode (more responsive)
+// Auto-adjust difficulty every 30 seconds when in auto mode
+// Uses minimum worker hashrate so ALL workers can submit shares
 setInterval(() => {
   if (!CONFIG.pool.autoMode || globalStats.suspended) return;
   
-  const optimalDiff = calculateOptimalDifficulty();
-  const diffChange = Math.abs(optimalDiff - lastUsedDifficulty) / lastUsedDifficulty;
+  const poolDiff = calculatePoolDifficulty();
+  const combinedDiff = calculateCombinedDifficulty();
+  const diffChange = Math.abs(poolDiff - lastUsedDifficulty) / lastUsedDifficulty;
   
-  // Log current combined hashrate for debugging
+  // Log worker stats
+  const workers = getWorkerDifficulties();
   const combinedHash = globalStats.combinedHashrate;
-  console.log(`[Auto] Combined hashrate: ${combinedHash.toFixed(1)} H/s, optimal diff: ${optimalDiff}, current diff: ${lastUsedDifficulty}`);
+  console.log(`[Auto] Workers: ${workers.length}, Combined: ${combinedHash.toFixed(1)} H/s, Pool diff: ${poolDiff}, Combined diff: ${combinedDiff}`);
   
-  // Reconnect if difficulty changed by more than 30% (more responsive)
-  if (diffChange > 0.3 && poolConnected) {
-    console.log(`[Auto] Difficulty adjustment: ${lastUsedDifficulty} -> ${optimalDiff} (${(diffChange * 100).toFixed(0)}% change)`);
+  // Log per-worker difficulties
+  for (const w of workers) {
+    console.log(`[Auto]   - ${w.id}: ${w.hashrate.toFixed(1)} H/s → diff ${w.difficulty}`);
+  }
+  
+  // Reconnect if pool difficulty changed by more than 30%
+  if (diffChange > 0.3 && poolConnected && workers.length > 0) {
+    console.log(`[Auto] Pool difficulty adjustment: ${lastUsedDifficulty} -> ${poolDiff} (${(diffChange * 100).toFixed(0)}% change)`);
     
     // Check if port should change
-    const optimalPort = getOptimalPort(optimalDiff);
+    const optimalPort = getOptimalPort(poolDiff);
     if (CONFIG.pool.port !== optimalPort) {
       CONFIG.pool.port = optimalPort;
       console.log(`[Auto] Switching to port ${optimalPort}`);
     }
     
-    lastUsedDifficulty = optimalDiff;
+    lastUsedDifficulty = poolDiff;
     reconnectPool();
   }
-}, 30000);  // Check every 30 seconds for faster response
+}, 30000);  // Check every 30 seconds
 
 // =============================================================================
 // GLOBAL STATS - Combined stats for ALL miners
@@ -944,6 +1003,7 @@ const server = http.createServer(async (req, res) => {
         id,
         ip: miner.ip,
         hashrate: miner.hashrate,
+        difficulty: calculateWorkerDifficulty(miner.hashrate || 0),  // Worker's ideal difficulty
         hashes: miner.hashes,
         connected: miner.connected,
         workerType: miner.workerType,
@@ -956,6 +1016,10 @@ const server = http.createServer(async (req, res) => {
         throttled: miner.throttled
       });
     }
+    
+    // Calculate difficulty stats
+    const poolDiff = calculatePoolDifficulty();
+    const combinedDiff = calculateCombinedDifficulty();
     
     res.end(JSON.stringify({
       server: {
@@ -976,11 +1040,13 @@ const server = http.createServer(async (req, res) => {
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),
         workerName: CONFIG.pool.workerName,
         autoMode: CONFIG.pool.autoMode,
-        difficulty: CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty
+        poolDifficulty: poolDiff,            // Actual difficulty sent to pool (based on min worker)
+        combinedDifficulty: combinedDiff     // Sum of all worker difficulties (for display)
       },
       config: {
         autoMode: CONFIG.pool.autoMode,
-        difficulty: CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty
+        poolDifficulty: poolDiff,
+        combinedDifficulty: combinedDiff
       },
       mining: {
         combinedHashrate: globalStats.combinedHashrate,
@@ -1900,8 +1966,12 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'auth') {
         console.log(`[${logId}] Auth request`);
         
-        // Calculate current optimal difficulty based on combined hashrate
-        const currentDiff = CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty;
+        // Calculate pool difficulty (based on minimum worker hashrate)
+        const poolDiff = calculatePoolDifficulty();
+        // Calculate this worker's "virtual" difficulty (for display)
+        const workerDiff = activeMiner ? calculateWorkerDifficulty(activeMiner.hashrate || 0) : 1000;
+        // Combined difficulty across all workers
+        const combinedDiff = calculateCombinedDifficulty();
         
         // Pool is shared, just confirm auth if AUTHENTICATED (not just connected)
         if (poolAuthenticated && currentJob) {
@@ -1914,7 +1984,9 @@ wss.on('connection', (ws, req) => {
               pool: {
                 host: CONFIG.pool.host,
                 port: CONFIG.pool.port,
-                difficulty: currentDiff,
+                poolDifficulty: poolDiff,        // Actual difficulty sent to pool
+                workerDifficulty: workerDiff,    // This worker's ideal difficulty
+                combinedDifficulty: combinedDiff, // Sum of all worker difficulties
                 algo: 'rx/0',
                 workerName: CONFIG.pool.workerName
               }
@@ -2738,9 +2810,15 @@ function generateDashboardHTML() {
       </div>
       
       <div class="card">
-        <h3>🎯 Current Difficulty</h3>
-        <div class="value" id="currentDiff">${CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty}</div>
-        <div class="sub" id="diffMode">${CONFIG.pool.autoMode ? '🤖 AUTO mode' : '✋ MANUAL mode'}</div>
+        <h3>🎯 Pool Difficulty</h3>
+        <div class="value" id="poolDiff">${calculatePoolDifficulty()}</div>
+        <div class="sub" id="diffMode">${CONFIG.pool.autoMode ? '🤖 AUTO (min worker)' : '✋ MANUAL mode'}</div>
+      </div>
+      
+      <div class="card">
+        <h3>📊 Combined Difficulty</h3>
+        <div class="value" id="combinedDiff">${calculateCombinedDifficulty()}</div>
+        <div class="sub">Sum of all worker difficulties</div>
       </div>
       
       <div class="card">
@@ -2784,10 +2862,10 @@ function generateDashboardHTML() {
             <th>Type</th>
             <th>IP Address</th>
             <th>Hashrate</th>
+            <th>Difficulty</th>
             <th>Status</th>
             <th>Temp</th>
             <th>Shares</th>
-            <th>Connected</th>
           </tr>
         </thead>
         <tbody id="minersTableBody">
@@ -2808,16 +2886,17 @@ function generateDashboardHTML() {
               }
               const tempColor = m.temperature >= 80 ? '#f85149' : m.temperature >= 60 ? '#f7931a' : '#3fb950';
               const tempDisplay = m.temperature !== undefined && m.temperature !== null ? `<span style="color:${tempColor}">${m.temperature.toFixed(0)}°C</span>` : '-';
+              const workerDiff = calculateWorkerDifficulty(m.hashrate || 0);
               return `
           <tr>
             <td><span class="status" style="background: ${statusColor}"></span>#${m.id}</td>
             <td>${m.workerType || '🖥️'}</td>
             <td>${m.ip}</td>
             <td style="color: #f7931a; font-weight: bold;">${(m.hashrate || 0).toFixed(1)} H/s</td>
+            <td style="color: #6ee7ff;">${workerDiff}</td>
             <td style="color: ${statusColor};">${statusIcon} ${statusText}</td>
             <td>${tempDisplay}</td>
             <td>${m.hashes}</td>
-            <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
           </tr>
           `;
             }).join('')}
@@ -2874,9 +2953,10 @@ function generateDashboardHTML() {
         document.getElementById('combinedHashrate').textContent = (data.mining.combinedHashrate || 0).toFixed(1) + ' H/s';
         document.getElementById('combinedHashrate').parentElement.querySelector('.sub').textContent = 'All ' + data.miners.active + ' workers combined';
         
-        // Update difficulty
-        document.getElementById('currentDiff').textContent = data.config?.difficulty || '-';
-        document.getElementById('diffMode').textContent = data.config?.autoMode ? '🤖 AUTO mode' : '✋ MANUAL mode';
+        // Update difficulties (pool and combined)
+        document.getElementById('poolDiff').textContent = data.pool?.poolDifficulty || data.config?.poolDifficulty || '-';
+        document.getElementById('combinedDiff').textContent = data.pool?.combinedDifficulty || data.config?.combinedDifficulty || '-';
+        document.getElementById('diffMode').textContent = data.config?.autoMode ? '🤖 AUTO (min worker)' : '✋ MANUAL mode';
         
         // Update other values
         document.getElementById('minerCount').textContent = data.miners.active;
@@ -2938,7 +3018,7 @@ function generateDashboardHTML() {
               ? '<span style="color: ' + (m.temperature >= 80 ? '#f85149' : m.temperature >= 60 ? '#f7931a' : '#3fb950') + ';">' + m.temperature.toFixed(0) + '°C</span>' 
               : '-';
             
-            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #f7931a; font-weight: bold;">' + (m.hashrate || 0).toFixed(1) + ' H/s</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText + '</td><td>' + tempDisplay + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
+            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #f7931a; font-weight: bold;">' + (m.hashrate || 0).toFixed(1) + ' H/s</td><td style="color: #6ee7ff;">' + (m.difficulty || 1000) + '</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText + '</td><td>' + tempDisplay + '</td><td>' + m.hashes + '</td></tr>';
           }).join('');
         }
         

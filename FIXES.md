@@ -34,6 +34,37 @@ This document explains all fixes applied to the XMR Web Miner, how the system wo
 
 ## 🚀 Latest Changes
 
+### v4.3.6 (December 29, 2025)
+**Per-Worker Difficulty System**
+
+**Problem:** When one powerful worker joined, it raised the difficulty for everyone, preventing weaker workers from submitting shares. Pool only saw hashrate from whoever submitted last.
+
+**Solution:** Implemented per-worker difficulty tracking:
+- Pool difficulty is now set to the **MINIMUM** worker's ideal difficulty
+- This ensures ALL workers (even weak ones) can find and submit shares
+- Stronger workers simply submit MORE shares at the lower difficulty
+- Pool calculates: `total_hashrate = (total_shares × difficulty) / time`
+
+**Changes:**
+- ✅ Each worker now has their own "virtual" difficulty (hashrate × 30s)
+- ✅ Pool difficulty based on **minimum** worker hashrate (so everyone can submit)
+- ✅ Dashboard shows per-worker difficulties in Workers table
+- ✅ New "Pool Difficulty" card (actual difficulty sent to pool)
+- ✅ New "Combined Difficulty" card (sum of all worker difficulties)
+- ✅ API returns per-worker difficulty in `miners.list[].difficulty`
+- ✅ Auth response includes `poolDifficulty`, `workerDifficulty`, `combinedDifficulty`
+
+**How It Works:**
+- Worker A: 100 H/s → ideal diff 3000
+- Worker B: 20 H/s → ideal diff 600
+- Pool difficulty = 600 (based on weakest worker B)
+- Worker A finds ~5x more shares than B at this difficulty
+- Pool sees combined hashrate correctly!
+
+**Files Changed:** `proxy/server.js`, `config.js`, `FIXES.md`
+
+---
+
 ### v4.3.5 (December 29, 2025)
 **Pool Hashrate Fix & Dynamic Difficulty**
 

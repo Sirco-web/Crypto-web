@@ -2,17 +2,153 @@
 
 This document explains all fixes applied to the XMR Web Miner, how the system works, and provides guidance for future developers/AIs to understand and improve the codebase.
 
+> ⚠️ **IMPORTANT UPDATE POLICY:** Every update, upgrade, bug fix, or change to this project MUST be documented in this file. See [Update Policy](#update-policy) below.
+
 ---
 
 ## 📋 Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Critical Fixes Applied](#critical-fixes-applied)
-3. [File Structure & Responsibilities](#file-structure--responsibilities)
-4. [Data Flow](#data-flow)
-5. [Common Issues & Solutions](#common-issues--solutions)
-6. [API Reference](#api-reference)
-7. [Development Guide](#development-guide)
+1. [Update Policy](#update-policy)
+2. [Latest Changes](#latest-changes)
+3. [Architecture Overview](#architecture-overview)
+4. [Critical Fixes Applied](#critical-fixes-applied)
+5. [File Structure & Responsibilities](#file-structure--responsibilities)
+6. [Data Flow](#data-flow)
+7. [Common Issues & Solutions](#common-issues--solutions)
+8. [API Reference](#api-reference)
+9. [Development Guide](#development-guide)
+
+---
+
+## 📝 Update Policy
+
+**ALL changes to this codebase MUST be documented here.** When making any changes:
+
+1. Add a new entry under [Latest Changes](#latest-changes)
+2. Include: **Date**, **Summary**, **Why** (problem solved), **Files affected**
+3. Bump version in `config.js` and `proxy/server.js`
+4. Commit with descriptive message starting with version (e.g., `v4.3.4: Description`)
+5. Push to GitHub (auto-deploys to Koyeb)
+
+---
+
+## 🚀 Latest Changes
+
+### v4.3.4 (December 29, 2025)
+**Pool Confirmed Stats & Comprehensive Review**
+
+**Changes:**
+- ✅ Added "Pool Confirmed" shares stat to dashboard (from MoneroOcean API)
+- ✅ Shows wallet balance (XMR) under confirmed shares
+- ✅ Added `poolStats` object to `/api/stats` response
+- ✅ Renamed "Accepted Shares" to "Session Accepted" for clarity
+- ✅ Created comprehensive FIXES.md with full commit history
+- ✅ Updated README.md with update policy
+
+**Files Changed:** `proxy/server.js`, `config.js`, `FIXES.md`, `README.md`
+
+---
+
+### v4.3.3 (December 29, 2025)
+**Temperature Status Display & Temp-Stop Protection**
+
+**Changes:**
+- ✅ Fixed difficulty display on dashboard (was showing "-")
+- ✅ Added temperature column to workers table
+- ✅ Added temp-stop (🔥) and temp-throttle (⚠️) status icons
+- ✅ Cross-platform temperature monitoring in `ws_bridge.py`
+- ✅ **Block owner from force-starting temp-stopped miners**
+- ✅ Skip temp-stopped miners in broadcast start
+
+**Files Changed:** `proxy/server.js`, `native-miner/ws_bridge.py`, `native-miner/miner.py`, `native-miner/linux_miner.sh`, `config.js`
+
+---
+
+### v4.3.2 (December 29, 2025)
+**OOM Fix with 4-Worker Cap**
+
+**Problem:** Windows PC with 6 cores crashing with OOM errors  
+**Solution:** Hard cap of 4 workers max (each needs ~256-300MB RAM)
+
+**Files Changed:** `proxy/server.js`, `index.html`, `config.js`
+
+---
+
+### v4.3.1 (December 29, 2025)
+**Add /info WebSocket Endpoint**
+
+**Problem:** Info socket failing to connect  
+**Solution:** Added `/info` to accepted WebSocket paths
+
+**Files Changed:** `proxy/server.js`
+
+---
+
+### v4.3.0 (December 29, 2025)
+**Fix Auth Issues, Pool Keepalive, Unique Client IDs**
+
+**Problems:**
+1. "Unauthenticated" errors from pool session expiring
+2. RPi and Windows miners combined (same public IP)
+
+**Solutions:**
+1. Pool keepalive pings every 30 seconds
+2. Client-generated unique IDs instead of IP-based identification
+
+**Files Changed:** `proxy/server.js`, `index.html`, `native-miner/miner.py`, `native-miner/linux_miner.sh`, `native-miner/ws_bridge.py`
+
+---
+
+### v4.2.3 (December 29, 2025)
+**Fix Miner Merging Behind NAT**
+
+**Problem:** Miners behind same router being combined  
+**Solution:** URL path-based identification instead of IP
+
+---
+
+### v4.2.2 (December 29, 2025)
+**Use Pool's Actual Target**
+
+**Problem:** "Low difficulty share" rejections  
+**Solution:** Removed server-side target override, use pool's actual target
+
+---
+
+### v4.2.1 - v4.2.0 (December 29, 2025)
+- Lower difficulty for faster share finding
+- Better error handling for auth failures
+
+---
+
+### v4.1.8 - v4.1.0 (December 28, 2025)
+- Debug logging for share submission
+- Job tracking & timestamps
+- Info socket priority
+- Job counter timing fixes
+- CPU throttle slider & worker controls
+- Miner control fixes
+
+---
+
+### v4.0.0 (December 28, 2025)
+**Major Rewrite - Centralized Config**
+
+Reverted to working miner, centralized all config in `config.js`.
+
+---
+
+### v3.9.x (December 27, 2025)
+**RandomX WASM Fixes**
+- Fix Module redeclaration error
+- Fix worker message format, WASM init
+- Use importScripts() for WASM loading
+
+---
+
+### v3.8.0 - v3.6.0 (December 27, 2025)
+- Replace broken perfektweb.js with RandomX WASM
+- Complete rewrite with proper hash tracking
 
 ---
 

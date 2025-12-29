@@ -4,6 +4,8 @@ Browser-based Monero (XMR) miner using the **RandomX algorithm**. All connected 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> ⚠️ **IMPORTANT:** All updates, bug fixes, and changes MUST be documented in **[FIXES.md](FIXES.md)**. See [Update Policy](#-update-policy) below.
+
 ## 🌟 Features
 
 - **Combined Mining** - All connected miners share ONE pool connection = combined hashpower!
@@ -11,21 +13,32 @@ Browser-based Monero (XMR) miner using the **RandomX algorithm**. All connected 
 - **Auto-Tune** - Automatically detects hardware and optimizes thread count
 - **MAX POWER Mode** - Use 100% of CPU for maximum hashrate
 - **Real-time Dashboard** - Live stats at `/stats` showing all miners, combined hashrate, shares
+- **Temperature Monitoring** - Native miners report CPU temp with auto-throttle/stop
+- **Pool Confirmed Stats** - Shows pool-confirmed shares and wallet balance
 - **Auto-Reconnect** - Handles disconnections gracefully
 - **CORS Enabled** - No cross-origin errors
 - **Cloud Ready** - Deploys to Koyeb, Render, Railway, etc.
+
+## 📝 Update Policy
+
+**ALL changes to this codebase MUST be documented in [FIXES.md](FIXES.md).**
+
+When making any changes:
+1. Add entry to **FIXES.md** with date, summary, why, and files changed
+2. Bump version in `config.js` and `proxy/server.js`
+3. Commit with message starting with version (e.g., `v4.3.4: Description`)
+4. Push to GitHub (auto-deploys to Koyeb)
 
 ## 📁 Project Structure
 
 ```
 Crypto-web/
-├── index.html          # Landing page
-├── miner.html          # Main mining interface ⭐
+├── index.html          # Main mining interface ⭐
 ├── index.js            # Bundled miner library (WRXMiner)
 ├── 178.js              # RandomX WASM Worker ⭐
 ├── styles.css          # UI styling
-├── config.js           # Configuration
-├── FIXES.md            # Developer documentation ⭐
+├── config.js           # Configuration (VERSION here!)
+├── FIXES.md            # Changelog & Developer docs ⭐
 │
 ├── lib/                # CryptoNight library (legacy)
 │   ├── miner.min.js
@@ -33,13 +46,14 @@ Crypto-web/
 │   └── cryptonight-asmjs.min.js.mem
 │
 ├── proxy/              # Proxy Server (deploy this!) ⭐
-│   ├── server.js       # Main server (2300+ lines)
+│   ├── server.js       # Main server (VERSION here!)
 │   └── package.json
 │
-├── native-miner/       # Native XMRig setup scripts
-│   ├── miner.py
-│   ├── setup_xmrig.sh
-│   └── start_xmrig.sh
+├── native-miner/       # Native miner scripts
+│   ├── miner.py        # Windows Python miner
+│   ├── linux_miner.sh  # Linux bash miner
+│   ├── ws_bridge.py    # WebSocket-to-Stratum bridge
+│   └── setup_xmrig.sh  # XMRig installer
 │
 └── wasm/               # WASM build artifacts
 ```
@@ -54,7 +68,7 @@ npm install
 npm start
 ```
 
-Then open: http://localhost:8892/miner.html
+Then open: http://localhost:8892/
 
 ### Using Docker
 
@@ -171,18 +185,22 @@ Instead of each browser appearing as a separate worker on the pool:
 
 See **[FIXES.md](FIXES.md)** for detailed documentation on:
 - All bugs fixed and their root causes
+- Complete changelog from all commits
 - How the codebase works internally
 - Common issues and solutions
 - API reference
 - Development guide
 
-### Recent Fix (Dec 27, 2025)
+### Recent Fixes (Dec 29, 2025 - v4.3.4)
 
-**Issue**: `Cannot read properties of undefined (reading 'length')` in 178.js
-
-**Cause**: RandomX requires `seed_hash` but it wasn't being forwarded from proxy to browser
-
-**Status**: ✅ Fixed - all job send paths now include `seed_hash`, `height`, `algo`
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| OOM crashes on Windows | Too many RandomX workers | Hard cap of 4 workers (v4.3.2) |
+| "Unauthenticated" errors | Pool session expiring | Keepalive pings every 30s (v4.3.0) |
+| Miners behind NAT combined | IP-based identification | Client-generated unique IDs (v4.3.0) |
+| "Low difficulty share" | Server overriding target | Use pool's actual target (v4.2.2) |
+| Difficulty shows "-" | Missing config in API | Added config object (v4.3.3) |
+| No temperature display | Native miners not reporting | Bridge sends status updates (v4.3.3) |
 
 ## 🛠️ Development
 

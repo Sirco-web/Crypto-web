@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.3';
+const SERVER_VERSION = '4.3.4';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -985,6 +985,13 @@ const server = http.createServer(async (req, res) => {
         acceptedShares: globalStats.acceptedShares,
         rejectedShares: globalStats.rejectedShares,
         blocksFound: globalStats.blocksFound
+      },
+      poolStats: {
+        confirmedShares: poolWalletStats.totalShares || 0,
+        balance: poolWalletStats.balance || '0.000000',
+        paid: poolWalletStats.paid || '0.000000',
+        hashrate: poolWalletStats.hashrate || '0 H/s',
+        lastShare: poolWalletStats.lastShare || 'Never'
       },
       miners: {
         active: globalStats.activeMiners.size,
@@ -2715,15 +2722,15 @@ function generateDashboardHTML() {
       </div>
       
       <div class="card">
-        <h3>✅ Accepted Shares</h3>
+        <h3>✅ Session Accepted</h3>
         <div class="value green" id="acceptedShares">${globalStats.acceptedShares}</div>
         <div class="sub" id="rejectedShares">${globalStats.rejectedShares} rejected</div>
       </div>
       
       <div class="card">
-        <h3>📤 Total Submitted</h3>
-        <div class="value" id="totalShares">${globalStats.totalShares}</div>
-        <div class="sub" id="totalHashes">Waiting for shares...</div>
+        <h3>🏦 Pool Confirmed</h3>
+        <div class="value green" id="poolConfirmedShares">${poolWalletStats.totalShares || 0}</div>
+        <div class="sub" id="poolBalance">${poolWalletStats.balance || '0.000000'} XMR</div>
       </div>
       
       <div class="card">
@@ -2854,9 +2861,14 @@ function generateDashboardHTML() {
         document.getElementById('totalConnections').textContent = data.miners.totalConnections + ' total connections';
         document.getElementById('acceptedShares').textContent = data.mining.acceptedShares;
         document.getElementById('rejectedShares').textContent = data.mining.rejectedShares + ' rejected';
-        document.getElementById('totalShares').textContent = data.mining.totalShares || 0;
-        document.getElementById('totalHashes').textContent = data.mining.acceptedShares > 0 ? 'Shares working!' : 'Waiting for shares...';
         document.getElementById('blocksFound').textContent = data.mining.blocksFound;
+        
+        // Update pool-confirmed stats
+        if (data.poolStats) {
+          document.getElementById('poolConfirmedShares').textContent = data.poolStats.confirmedShares || 0;
+          document.getElementById('poolBalance').textContent = (data.poolStats.balance || '0.000000') + ' XMR';
+        }
+        
         document.getElementById('poolStatus').innerHTML = '<span style="color: ' + (data.pool.connected ? '#3fb950' : '#f85149') + '">' + (data.pool.connected ? '● Connected' : '○ Disconnected') + '</span>';
         document.getElementById('uptime').textContent = data.server.uptimeFormatted;
         

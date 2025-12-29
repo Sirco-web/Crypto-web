@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.4.0';
+const SERVER_VERSION = '4.4.1';
 const VERSION_DATE = '2025-12-30';
 
 // =============================================================================
@@ -371,22 +371,26 @@ function sendStratumCommand(minerId, action) {
 // Shares are validated against pool's target before forwarding
 // =============================================================================
 
-// Convert difficulty to stratum target (8-char hex, big-endian)
-// Lower difficulty = easier target (higher hex value)
+// Convert difficulty to stratum target (8-char hex, LITTLE-ENDIAN as per stratum protocol)
+// Higher difficulty = lower target value = harder to find
+// Example: diff 1000 → target value 4,294,967 → hex "37894100" (little-endian)
 function difficultyToTarget(difficulty) {
   if (difficulty < 1) difficulty = 1;
   // Target = 0xFFFFFFFF / difficulty (for 32-bit target)
   const targetValue = Math.floor(0xFFFFFFFF / difficulty);
-  // Convert to 8-char hex string, padded with zeros
+  // Convert to 8-char hex string in LITTLE-ENDIAN (reverse byte order)
   let hex = targetValue.toString(16).padStart(8, '0');
+  // Reverse bytes: "AABBCCDD" → "DDCCBBAA"
+  hex = hex.match(/../g).reverse().join('');
   return hex;
 }
 
-// Convert stratum target to difficulty
+// Convert stratum target to difficulty (target is LITTLE-ENDIAN)
 function targetToDifficulty(target) {
   if (!target || target.length < 8) return 10000;
-  // Parse first 8 chars as hex
-  const targetValue = parseInt(target.substring(0, 8), 16);
+  // Reverse bytes to get big-endian value
+  const reversed = target.substring(0, 8).match(/../g).reverse().join('');
+  const targetValue = parseInt(reversed, 16);
   if (targetValue === 0) return 1000000;  // Prevent division by zero
   return Math.floor(0xFFFFFFFF / targetValue);
 }

@@ -34,6 +34,26 @@ This document explains all fixes applied to the XMR Web Miner, how the system wo
 
 ## 🚀 Latest Changes
 
+### v4.3.5 (December 29, 2025)
+**Pool Hashrate Fix & Dynamic Difficulty**
+
+**Problem:** Pool only saw hashrate from the last worker that submitted a share, not combined hashrate from all workers. This happened because:
+- Pool calculates hashrate as `difficulty × shares / time`
+- Difficulty was not responsive to combined hashrate
+- Pool URL/port were hardcoded in web miner
+
+**Changes:**
+- ✅ Proxy now sends pool config (host, port, difficulty, algo) in auth response
+- ✅ Web miner receives and logs pool config from proxy (source of truth)
+- ✅ Difficulty auto-adjustment is now faster: every 30s instead of 2min
+- ✅ Difficulty change threshold reduced: 30% change instead of 50%
+- ✅ Combined hashrate logged during difficulty checks for debugging
+- ✅ Added `proxyPoolConfig` variable in web miner to store proxy-provided config
+
+**Files Changed:** `proxy/server.js`, `index.html`, `config.js`, `FIXES.md`
+
+---
+
 ### v4.3.4 (December 29, 2025)
 **Pool Confirmed Stats & Comprehensive Review**
 

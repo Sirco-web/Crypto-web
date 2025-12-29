@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.4';
+const SERVER_VERSION = '4.3.5';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -466,16 +466,20 @@ setInterval(() => {
 // Track last used difficulty for auto-adjustment
 let lastUsedDifficulty = 10000;
 
-// Auto-adjust difficulty every 2 minutes when in auto mode
+// Auto-adjust difficulty every 30 seconds when in auto mode (more responsive)
 setInterval(() => {
   if (!CONFIG.pool.autoMode || globalStats.suspended) return;
   
   const optimalDiff = calculateOptimalDifficulty();
   const diffChange = Math.abs(optimalDiff - lastUsedDifficulty) / lastUsedDifficulty;
   
-  // Only reconnect if difficulty changed by more than 50%
-  if (diffChange > 0.5 && poolConnected) {
-    console.log(`[Auto] Difficulty change detected: ${lastUsedDifficulty} -> ${optimalDiff} (${(diffChange * 100).toFixed(0)}% change)`);
+  // Log current combined hashrate for debugging
+  const combinedHash = globalStats.combinedHashrate;
+  console.log(`[Auto] Combined hashrate: ${combinedHash.toFixed(1)} H/s, optimal diff: ${optimalDiff}, current diff: ${lastUsedDifficulty}`);
+  
+  // Reconnect if difficulty changed by more than 30% (more responsive)
+  if (diffChange > 0.3 && poolConnected) {
+    console.log(`[Auto] Difficulty adjustment: ${lastUsedDifficulty} -> ${optimalDiff} (${(diffChange * 100).toFixed(0)}% change)`);
     
     // Check if port should change
     const optimalPort = getOptimalPort(optimalDiff);
@@ -487,7 +491,7 @@ setInterval(() => {
     lastUsedDifficulty = optimalDiff;
     reconnectPool();
   }
-}, 120000);  // Check every 2 minutes
+}, 30000);  // Check every 30 seconds for faster response
 
 // =============================================================================
 // GLOBAL STATS - Combined stats for ALL miners
@@ -1895,9 +1899,27 @@ wss.on('connection', (ws, req) => {
       
       if (msg.type === 'auth') {
         console.log(`[${logId}] Auth request`);
+        
+        // Calculate current optimal difficulty based on combined hashrate
+        const currentDiff = CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty;
+        
         // Pool is shared, just confirm auth if AUTHENTICATED (not just connected)
         if (poolAuthenticated && currentJob) {
-          ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
+          // Send pool config to miner (proxy sets these, not hardcoded in client!)
+          ws.send(JSON.stringify({ 
+            type: 'authed', 
+            params: { 
+              hashes: 0,
+              // Pool configuration - proxy is the source of truth
+              pool: {
+                host: CONFIG.pool.host,
+                port: CONFIG.pool.port,
+                difficulty: currentDiff,
+                algo: 'rx/0',
+                workerName: CONFIG.pool.workerName
+              }
+            } 
+          }));
           ws.send(JSON.stringify({
             type: 'job',
             params: {

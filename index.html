@@ -279,6 +279,9 @@
       });
     };
     
+    // Pool config received from proxy (proxy is source of truth)
+    var proxyPoolConfig = null;
+    
     var on_servermsg = function(e) {
       // Messages from pool/proxy
       if (e && e.type) {
@@ -287,6 +290,14 @@
             log('✓ Authenticated with pool', 'success');
             $('status').textContent = 'Mining';
             $('status').style.color = '#00ff88';
+            
+            // Store pool config from proxy (if provided)
+            if (e.params && e.params.pool) {
+              proxyPoolConfig = e.params.pool;
+              const poolInfo = proxyPoolConfig.host + ':' + proxyPoolConfig.port;
+              log('📡 Pool: ' + poolInfo + ' (diff: ' + proxyPoolConfig.difficulty + ')', 'info');
+              console.log('[Miner] Pool config from proxy:', proxyPoolConfig);
+            }
             break;
           case 'job':
             log('⛏️ New job received', 'info');

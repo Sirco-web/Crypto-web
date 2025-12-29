@@ -14,12 +14,11 @@ if errorlevel 1 (
 )
 
 echo Installing requirements...
-pip install websocket-client py-cryptonight
+pip install websocket-client
 
 if errorlevel 1 (
     echo.
-    echo If py-cryptonight fails, try:
-    echo   pip install py-cryptonight --only-binary :all:
+    echo ERROR: Failed to install websocket-client
     echo.
     pause
     exit /b 1

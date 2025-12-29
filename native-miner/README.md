@@ -4,6 +4,34 @@ Native miners that connect through the proxy server. All miners (browser + nativ
 
 **Version 3.3.0** - Now with per-worker difficulty support!
 
+## Requirements
+
+### Windows
+- Python 3.7+ ([Download](https://www.python.org/downloads/))
+- `pip install websocket-client` (auto-installed by setup.bat)
+- Internet connection
+
+### Linux
+- Python 3 with pip
+- `pip install websockets` (auto-installed by linux_miner.sh)
+- Internet connection
+
+**Note:** No special crypto libraries needed! XMRig handles all the mining.
+
+## Quick Start
+
+### Windows
+```cmd
+setup.bat       # First time only - installs dependencies
+start_miner.bat # Start mining
+```
+
+### Linux
+```bash
+chmod +x linux_miner.sh
+./linux_miner.sh
+```
+
 ## Available Miners
 
 1. **Windows** - `miner.py` (Python + XMRig)

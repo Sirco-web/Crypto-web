@@ -34,7 +34,7 @@ except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "websocket-client"], check=True)
     import websocket
 
-BRIDGE_VERSION = "4.1.0"
+BRIDGE_VERSION = "4.1.1"
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80
@@ -263,7 +263,8 @@ def websocket_thread():
                 on_error=on_ws_error,
                 on_close=on_ws_close
             )
-            ws.run_forever(ping_interval=10, ping_timeout=20)
+            # ping_interval must be > ping_timeout
+            ws.run_forever(ping_interval=30, ping_timeout=10)
         except Exception as e:
             print(f"[WS] Error: {e}")
         

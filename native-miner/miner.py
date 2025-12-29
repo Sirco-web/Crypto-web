@@ -25,7 +25,7 @@ import hashlib
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION = "4.1.0"  # Threaded bridge for stability
+CLIENT_VERSION = "4.1.1"  # Fixed ping_interval > ping_timeout
 WORKER_NAME = "windows-miner"
 
 # Generate a unique client ID (persisted in a file)

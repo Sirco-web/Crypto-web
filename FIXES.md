@@ -34,6 +34,41 @@ This document explains all fixes applied to the XMR Web Miner, how the system wo
 
 ## 🚀 Latest Changes
 
+### v4.3.7 (December 29, 2025)
+**TRUE Per-Worker Difficulty System**
+
+**Problem:** Previous versions tried to use a shared difficulty for all workers. When a powerful worker joined, it raised difficulty for everyone, preventing weaker workers from ever finding shares.
+
+**Solution:** Each worker now gets their OWN difficulty based on their individual hashrate!
+
+**How It Works:**
+1. **Worker connects** → Proxy calculates difficulty from worker's hashrate (`hashrate × 30s`)
+2. **Job sent to worker** → Worker receives job with THEIR OWN target (easier for slow workers)
+3. **Worker finds share** → Proxy checks if it meets POOL's actual target
+4. **If meets pool target** → Submitted to pool, counts as real share
+5. **If only meets worker target** → Counted locally (worker sees progress, pool doesn't)
+
+**Example:**
+- Worker A: 500 H/s → gets diff 15,000 (easier target for them)
+- Worker B: 20 H/s → gets diff 600 (much easier target)
+- Pool target: diff 50,000
+- Worker B finds more shares at their easy diff, some meet pool target!
+- Both workers can contribute to pool hashrate
+
+**Changes:**
+- ✅ `difficultyToTarget()` - Converts difficulty to stratum target hex
+- ✅ `targetToDifficulty()` - Converts target hex to difficulty  
+- ✅ `broadcastJob()` - Now sends each worker their OWN target
+- ✅ `submitToPool()` - Validates shares against pool's actual target
+- ✅ Workers receive `share_result` messages (submitted/worker_only/rejected)
+- ✅ Dashboard shows per-worker difficulty in Workers table
+- ✅ Web miner logs show individual difficulty on auth
+- ✅ API returns `difficulty` and `workerShares` per miner
+
+**Files Changed:** `proxy/server.js`, `index.html`, `config.js`, `FIXES.md`
+
+---
+
 ### v4.3.6 (December 29, 2025)
 **Per-Worker Difficulty System**
 

@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.6';
+const SERVER_VERSION = '4.3.7';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -365,45 +365,49 @@ function sendStratumCommand(minerId, action) {
 }
 
 // =============================================================================
-// PER-WORKER DIFFICULTY TRACKING
-// Each worker has their own "virtual" difficulty based on their hashrate
-// Pool difficulty is set to the MINIMUM so all workers can submit shares
+// PER-WORKER DIFFICULTY SYSTEM
+// Each worker gets their OWN difficulty based on their individual hashrate
+// Workers receive jobs with their personal target
+// Shares are validated against pool's target before forwarding
 // =============================================================================
 
-// Calculate per-worker difficulty (what difficulty WOULD be ideal for this worker)
+// Convert difficulty to stratum target (8-char hex, big-endian)
+// Lower difficulty = easier target (higher hex value)
+function difficultyToTarget(difficulty) {
+  if (difficulty < 1) difficulty = 1;
+  // Target = 0xFFFFFFFF / difficulty (for 32-bit target)
+  const targetValue = Math.floor(0xFFFFFFFF / difficulty);
+  // Convert to 8-char hex string, padded with zeros
+  let hex = targetValue.toString(16).padStart(8, '0');
+  return hex;
+}
+
+// Convert stratum target to difficulty
+function targetToDifficulty(target) {
+  if (!target || target.length < 8) return 10000;
+  // Parse first 8 chars as hex
+  const targetValue = parseInt(target.substring(0, 8), 16);
+  if (targetValue === 0) return 1000000;  // Prevent division by zero
+  return Math.floor(0xFFFFFFFF / targetValue);
+}
+
+// Calculate per-worker difficulty based on their individual hashrate
+// Target: 1 share every 30 seconds for smooth experience
 function calculateWorkerDifficulty(hashrate) {
-  if (hashrate < 1) return 1000;  // Minimum
-  const targetSeconds = 30;  // Target 1 share per 30 seconds
-  return Math.max(1000, Math.round(hashrate * targetSeconds));
+  if (!hashrate || hashrate < 1) return 1000;  // Minimum difficulty
+  const targetSeconds = 30;  // 1 share per 30 seconds
+  let diff = Math.round(hashrate * targetSeconds);
+  // Clamp to reasonable range
+  return Math.max(1000, Math.min(diff, 500000));
 }
 
-// Calculate pool difficulty - use MINIMUM worker hashrate so all workers can submit
-// This ensures even the weakest worker can find shares
-function calculatePoolDifficulty() {
-  let minHashrate = Infinity;
-  let hasWorkers = false;
-  
-  for (const miner of globalStats.activeMiners.values()) {
-    if (miner.hashrate && miner.hashrate > 0) {
-      hasWorkers = true;
-      minHashrate = Math.min(minHashrate, miner.hashrate);
-    }
-  }
-  
-  if (!hasWorkers || minHashrate === Infinity) {
-    return 1000;  // Default minimum
-  }
-  
-  // Use minimum worker's hashrate × 30s, but cap at reasonable level
-  // This ensures weakest worker gets ~1 share per 30s
-  const targetSeconds = 30;
-  let diff = Math.round(minHashrate * targetSeconds);
-  
-  // Clamp: min 1000, max 50000 (don't go too high even for fast miners)
-  return Math.max(1000, Math.min(diff, 50000));
+// Get pool's actual difficulty from current job target
+function getPoolDifficulty() {
+  if (!currentJob || !currentJob.target) return 10000;
+  return targetToDifficulty(currentJob.target);
 }
 
-// Calculate combined difficulty (sum of all worker difficulties for display)
+// Calculate combined difficulty (sum of all workers' individual difficulties)
 function calculateCombinedDifficulty() {
   let total = 0;
   for (const miner of globalStats.activeMiners.values()) {
@@ -419,15 +423,25 @@ function getWorkerDifficulties() {
     workers.push({
       id: id,
       hashrate: miner.hashrate || 0,
-      difficulty: calculateWorkerDifficulty(miner.hashrate || 0),
+      difficulty: miner.currentDifficulty || calculateWorkerDifficulty(miner.hashrate || 0),
       workerType: miner.workerType || 'Unknown'
     });
   }
   return workers;
 }
 
-// Legacy function for compatibility - now uses pool difficulty
+// Calculate pool difficulty - use low difficulty so shares can be found
+// Pool will accept any share that meets its target
+function calculatePoolDifficulty() {
+  // Use a reasonable base difficulty that allows shares to be found
+  // The pool's actual difficulty from its target is what matters for validation
+  return getPoolDifficulty();
+}
+
+// Legacy function for compatibility
 function calculateOptimalDifficulty() {
+  return getPoolDifficulty();
+}
   return calculatePoolDifficulty();
 }
 
@@ -517,40 +531,29 @@ setInterval(() => {
 // Track last used difficulty for auto-adjustment
 let lastUsedDifficulty = 10000;
 
-// Auto-adjust difficulty every 30 seconds when in auto mode
-// Uses minimum worker hashrate so ALL workers can submit shares
+// Per-worker difficulty logging every 30 seconds
+// Each worker gets their OWN difficulty - no pool reconnection needed!
 setInterval(() => {
-  if (!CONFIG.pool.autoMode || globalStats.suspended) return;
+  if (globalStats.suspended) return;
   
-  const poolDiff = calculatePoolDifficulty();
+  const poolDiff = getPoolDifficulty();
   const combinedDiff = calculateCombinedDifficulty();
-  const diffChange = Math.abs(poolDiff - lastUsedDifficulty) / lastUsedDifficulty;
   
   // Log worker stats
   const workers = getWorkerDifficulties();
   const combinedHash = globalStats.combinedHashrate;
-  console.log(`[Auto] Workers: ${workers.length}, Combined: ${combinedHash.toFixed(1)} H/s, Pool diff: ${poolDiff}, Combined diff: ${combinedDiff}`);
   
-  // Log per-worker difficulties
-  for (const w of workers) {
-    console.log(`[Auto]   - ${w.id}: ${w.hashrate.toFixed(1)} H/s → diff ${w.difficulty}`);
-  }
-  
-  // Reconnect if pool difficulty changed by more than 30%
-  if (diffChange > 0.3 && poolConnected && workers.length > 0) {
-    console.log(`[Auto] Pool difficulty adjustment: ${lastUsedDifficulty} -> ${poolDiff} (${(diffChange * 100).toFixed(0)}% change)`);
+  if (workers.length > 0) {
+    console.log(`[VarDiff] === Per-Worker Difficulty Status ===`);
+    console.log(`[VarDiff] Workers: ${workers.length}, Combined hashrate: ${combinedHash.toFixed(1)} H/s`);
+    console.log(`[VarDiff] Pool difficulty: ${poolDiff}, Combined worker difficulty: ${combinedDiff}`);
     
-    // Check if port should change
-    const optimalPort = getOptimalPort(poolDiff);
-    if (CONFIG.pool.port !== optimalPort) {
-      CONFIG.pool.port = optimalPort;
-      console.log(`[Auto] Switching to port ${optimalPort}`);
+    // Log per-worker difficulties
+    for (const w of workers) {
+      console.log(`[VarDiff]   → ${w.id}: ${w.hashrate.toFixed(1)} H/s = diff ${w.difficulty}`);
     }
-    
-    lastUsedDifficulty = poolDiff;
-    reconnectPool();
   }
-}, 30000);  // Check every 30 seconds
+}, 30000);  // Log every 30 seconds
 
 // =============================================================================
 // GLOBAL STATS - Combined stats for ALL miners
@@ -836,35 +839,45 @@ function broadcastJob(job) {
   if (!job) return;
   jobsBroadcast++;  // Increment job counter
   
-  // Use pool's actual target - we cannot lower difficulty client-side
-  // The pool validates shares against ITS target, not what we send to miners
-  // At ~10,000 difficulty and 20 H/s = expect share every ~8 minutes
+  const poolTarget = job.target;
+  const poolDiff = targetToDifficulty(poolTarget);
   
-  const msg = {
-    type: 'job',
-    params: {
-      job_id: job.job_id,
-      blob: job.blob,
-      target: job.target,  // Use pool's actual target
-      // RandomX required fields
-      seed_hash: job.seed_hash,
-      height: job.height,
-      algo: job.algo || 'rx/0'
+  console.log(`[Broadcast] Job #${jobsBroadcast} - Pool target: ${poolTarget} (diff: ${poolDiff})`);
+  
+  // Send to each WebSocket miner with THEIR OWN target based on their hashrate
+  for (const [id, miner] of globalStats.activeMiners) {
+    if (miner.ws && miner.ws.readyState === WebSocket.OPEN) {
+      // Calculate this worker's individual difficulty
+      const workerDiff = calculateWorkerDifficulty(miner.hashrate || 0);
+      const workerTarget = difficultyToTarget(workerDiff);
+      
+      // Store worker's current difficulty for tracking
+      miner.currentDifficulty = workerDiff;
+      miner.currentTarget = workerTarget;
+      
+      const msg = {
+        type: 'job',
+        params: {
+          job_id: job.job_id,
+          blob: job.blob,
+          target: workerTarget,  // Worker's OWN target!
+          pool_target: poolTarget,  // Also send pool's target for reference
+          seed_hash: job.seed_hash,
+          height: job.height,
+          algo: job.algo || 'rx/0'
+        }
+      };
+      
+      console.log(`[Broadcast]   → Worker ${id}: diff ${workerDiff} (target: ${workerTarget})`);
+      miner.ws.send(JSON.stringify(msg));
     }
-  };
-  console.log(`[Broadcast] Job #${jobsBroadcast} - Sending job:`, JSON.stringify({
-    job_id: msg.params.job_id,
-    target: msg.params.target,
-    height: msg.params.height
-  }));
+  }
   
-  // Broadcast to WebSocket miners
-  broadcastToMiners(msg);
-  
-  // Broadcast to Stratum miners (native XMRig) - use original target
+  // Broadcast to Stratum miners (native XMRig) - they handle their own difficulty
   broadcastJobToStratum(job);
 }
 
+// Legacy broadcast function (not used for jobs anymore)
 function broadcastToMiners(msg) {
   const data = JSON.stringify(msg);
   for (const [id, miner] of globalStats.activeMiners) {
@@ -889,29 +902,58 @@ function addRecentJob(job) {
   }
 }
 
-function submitToPool(params) {
+function submitToPool(params, minerId = null) {
   console.log('[Pool] Submit request received:', JSON.stringify(params));
   console.log('[Pool] Recent jobs:', [...recentJobs.keys()].join(', ') || 'EMPTY');
   
   if (!sharedPool || !sharedPool.writable) {
     console.log('[Pool] ❌ Cannot submit - pool not connected');
-    return false;
+    return { submitted: false, reason: 'pool_disconnected' };
   }
   
   if (!poolAuthenticated || !poolWorkerId) {
     console.log('[Pool] ❌ Cannot submit - not authenticated yet (no worker ID)');
-    return false;
+    return { submitted: false, reason: 'not_authenticated' };
   }
   
   // Check if this share is for a RECENT job (allow slightly stale shares)
-  if (!recentJobs.has(params.job_id)) {
+  const job = recentJobs.get(params.job_id);
+  if (!job) {
     console.log('[Pool] ⚠️ Rejecting share - job_id not in recent list');
     console.log(`[Pool]    Share job_id: ${params.job_id}`);
     console.log(`[Pool]    Recent jobs: ${[...recentJobs.keys()].join(', ')}`);
-    return false;
+    return { submitted: false, reason: 'stale_job' };
   }
   
-  console.log('[Pool] ✓ Job ID valid, submitting to pool...');
+  // Get the pool's actual target for this job
+  const poolTarget = job.target;
+  const poolDiff = targetToDifficulty(poolTarget);
+  
+  // Check if the share result meets the pool's target
+  // The result is a 64-char hex hash - we compare the first 8 chars against target
+  const resultPrefix = params.result ? params.result.substring(56, 64) : '';  // Last 8 chars (big-endian)
+  const resultValue = parseInt(resultPrefix, 16);
+  const poolTargetValue = parseInt(poolTarget.substring(0, 8), 16);
+  
+  const meetsPoolTarget = resultValue <= poolTargetValue;
+  
+  // Get worker info for logging
+  const miner = minerId ? globalStats.activeMiners.get(minerId) : null;
+  const workerDiff = miner ? (miner.currentDifficulty || 1000) : 1000;
+  
+  console.log(`[Pool] Share check: result=${resultPrefix} (${resultValue}), pool_target=${poolTarget.substring(0,8)} (${poolTargetValue})`);
+  console.log(`[Pool] Worker diff: ${workerDiff}, Pool diff: ${poolDiff}, Meets pool target: ${meetsPoolTarget}`);
+  
+  if (!meetsPoolTarget) {
+    // Share met worker's target but not pool's - count as worker share only
+    console.log('[Pool] ⚡ Share meets worker target but not pool target - counted locally only');
+    if (miner) {
+      miner.workerShares = (miner.workerShares || 0) + 1;
+    }
+    return { submitted: false, reason: 'below_pool_target', workerShare: true };
+  }
+  
+  console.log('[Pool] ✓ Share meets pool target, submitting to pool...');
   
   // Log if it's not the current job but still valid
   if (currentJob && params.job_id !== currentJob.job_id) {
@@ -934,7 +976,7 @@ function submitToPool(params) {
   console.log('[Pool] Submit message:', JSON.stringify(msg));
   sharedPool.write(JSON.stringify(msg) + '\n');
   globalStats.totalShares++;
-  return true;
+  return { submitted: true };
 }
 
 // =============================================================================
@@ -1003,7 +1045,8 @@ const server = http.createServer(async (req, res) => {
         id,
         ip: miner.ip,
         hashrate: miner.hashrate,
-        difficulty: calculateWorkerDifficulty(miner.hashrate || 0),  // Worker's ideal difficulty
+        difficulty: miner.currentDifficulty || calculateWorkerDifficulty(miner.hashrate || 0),  // Worker's OWN difficulty
+        workerShares: miner.workerShares || 0,  // Shares that met worker target only
         hashes: miner.hashes,
         connected: miner.connected,
         workerType: miner.workerType,
@@ -1018,7 +1061,7 @@ const server = http.createServer(async (req, res) => {
     }
     
     // Calculate difficulty stats
-    const poolDiff = calculatePoolDifficulty();
+    const poolDiff = getPoolDifficulty();
     const combinedDiff = calculateCombinedDifficulty();
     
     res.end(JSON.stringify({
@@ -1966,15 +2009,20 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'auth') {
         console.log(`[${logId}] Auth request`);
         
-        // Calculate pool difficulty (based on minimum worker hashrate)
-        const poolDiff = calculatePoolDifficulty();
-        // Calculate this worker's "virtual" difficulty (for display)
-        const workerDiff = activeMiner ? calculateWorkerDifficulty(activeMiner.hashrate || 0) : 1000;
-        // Combined difficulty across all workers
-        const combinedDiff = calculateCombinedDifficulty();
-        
         // Pool is shared, just confirm auth if AUTHENTICATED (not just connected)
         if (poolAuthenticated && currentJob) {
+          // Calculate this worker's individual difficulty and target
+          const workerDiff = calculateWorkerDifficulty(activeMiner ? activeMiner.hashrate : 0);
+          const workerTarget = difficultyToTarget(workerDiff);
+          const poolDiff = getPoolDifficulty();
+          const combinedDiff = calculateCombinedDifficulty();
+          
+          // Store worker's difficulty
+          if (activeMiner) {
+            activeMiner.currentDifficulty = workerDiff;
+            activeMiner.currentTarget = workerTarget;
+          }
+          
           // Send pool config to miner (proxy sets these, not hardcoded in client!)
           ws.send(JSON.stringify({ 
             type: 'authed', 
@@ -1984,33 +2032,47 @@ wss.on('connection', (ws, req) => {
               pool: {
                 host: CONFIG.pool.host,
                 port: CONFIG.pool.port,
-                poolDifficulty: poolDiff,        // Actual difficulty sent to pool
-                workerDifficulty: workerDiff,    // This worker's ideal difficulty
+                poolDifficulty: poolDiff,        // Pool's actual difficulty
+                workerDifficulty: workerDiff,    // THIS worker's individual difficulty
                 combinedDifficulty: combinedDiff, // Sum of all worker difficulties
                 algo: 'rx/0',
                 workerName: CONFIG.pool.workerName
               }
             } 
           }));
+          
+          // Send job with THIS worker's target
           ws.send(JSON.stringify({
             type: 'job',
             params: {
               job_id: currentJob.job_id,
               blob: currentJob.blob,
-              target: currentJob.target,
+              target: workerTarget,  // Worker's OWN target!
+              pool_target: currentJob.target,  // Pool's target for reference
               seed_hash: currentJob.seed_hash,
               height: currentJob.height,
               algo: currentJob.algo || 'rx/0'
             }
           }));
+          
+          console.log(`[${logId}] Sent job with worker diff ${workerDiff} (target: ${workerTarget})`);
         }
       }
       else if (msg.type === 'submit') {
         console.log(`[${logId}] Submitting share...`);
-        submitToPool(msg.params);
+        const result = submitToPool(msg.params, minerId);
         if (activeMiner) {
           activeMiner.hashes++;
           activeMiner.lastUpdate = Date.now();
+          
+          // Send result back to worker
+          if (result.submitted) {
+            ws.send(JSON.stringify({ type: 'share_result', status: 'submitted', message: 'Share submitted to pool' }));
+          } else if (result.workerShare) {
+            ws.send(JSON.stringify({ type: 'share_result', status: 'worker_only', message: 'Share counted locally (below pool difficulty)' }));
+          } else {
+            ws.send(JSON.stringify({ type: 'share_result', status: 'rejected', reason: result.reason }));
+          }
         }
         globalStats.totalHashes++;
       }

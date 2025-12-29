@@ -296,20 +296,36 @@
               proxyPoolConfig = e.params.pool;
               const poolInfo = proxyPoolConfig.host + ':' + proxyPoolConfig.port;
               // Show pool difficulty and worker's individual difficulty
-              const poolDiff = proxyPoolConfig.poolDifficulty || proxyPoolConfig.difficulty || '?';
+              const poolDiff = proxyPoolConfig.poolDifficulty || '?';
               const workerDiff = proxyPoolConfig.workerDifficulty || '?';
               const combinedDiff = proxyPoolConfig.combinedDifficulty || '?';
               log('📡 Pool: ' + poolInfo, 'info');
-              log('🎯 Pool diff: ' + poolDiff + ' | Your diff: ' + workerDiff + ' | Combined: ' + combinedDiff, 'info');
+              log('🎯 Your difficulty: ' + workerDiff + ' (Pool: ' + poolDiff + ')', 'info');
               console.log('[Miner] Pool config from proxy:', proxyPoolConfig);
             }
             break;
           case 'job':
-            log('⛏️ New job received', 'info');
+            // Log job with target info
+            if (e.params) {
+              const target = e.params.target || '?';
+              log('⛏️ New job (target: ' + target.substring(0,8) + '...)', 'info');
+            } else {
+              log('⛏️ New job received', 'info');
+            }
+            break;
+          case 'share_result':
+            // Handle share submission result from proxy
+            if (e.status === 'submitted') {
+              log('📤 Share submitted to pool!', 'success');
+            } else if (e.status === 'worker_only') {
+              log('⚡ Share counted locally (building up...)', 'info');
+            } else if (e.status === 'rejected') {
+              log('⚠️ Share: ' + (e.reason || 'rejected'), 'warning');
+            }
             break;
           case 'accepted':
             totalAccepted++;
-            log('✅ Share accepted! Total: ' + totalAccepted, 'success');
+            log('✅ Share accepted by pool! Total: ' + totalAccepted, 'success');
             updateStats();
             break;
           case 'error':

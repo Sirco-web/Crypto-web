@@ -2,6 +2,8 @@
 
 Native miners that connect through the proxy server. All miners (browser + native) are combined into ONE pool worker!
 
+**Version 3.3.0** - Now with per-worker difficulty support!
+
 ## Available Miners
 
 1. **Windows** - `miner.py` (Python + XMRig)
@@ -9,48 +11,13 @@ Native miners that connect through the proxy server. All miners (browser + nativ
 
 Both miners use the `ws_bridge.py` WebSocket-to-Stratum bridge to connect through the proxy.
 
-## Requirements
-
-### Windows
-- Python 3.7+
-- Internet connection
-
-### Linux
-- Bash
-- Python 3 (for bridge)
-- Internet connection
-
-## Quick Start
-
-### Windows
-```cmd
-python miner.py
-```
-
-### Linux
-```bash
-chmod +x linux_miner.sh
-./linux_miner.sh
-```
-
-## How It Works
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│    XMRig     │────▶│  ws_bridge   │────▶│    Proxy     │────▶│   Pool       │
-│   (Mining)   │     │  (Local)     │     │  (Koyeb)     │     │ (MoneroOcean)│
-│   Port 3333  │     │  WebSocket   │     │   /proxy     │     │              │
-└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
-     Stratum              WS                  WS                   Stratum
-```
-
-1. **XMRig** runs locally and connects to the bridge on `127.0.0.1:3333`
-2. **ws_bridge.py** converts Stratum protocol to WebSocket
-3. Bridge connects to the proxy server via WebSocket (`wss://...koyeb.app/proxy`)
-4. **Proxy server** combines all miners (browser + native) into one worker
-5. All shares go to MoneroOcean pool
-
 ## Features
+
+### ✅ Per-Worker Difficulty (NEW in v3.3.0)
+Each worker gets their OWN difficulty based on their individual hashrate!
+- Weak workers get easier targets → find shares faster
+- Strong workers get harder targets → still find shares regularly
+- All workers can contribute regardless of hashrate differences
 
 ### ✅ Combined Mining
 Your hashrate is combined with all other miners connected to the proxy.

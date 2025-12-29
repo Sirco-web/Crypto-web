@@ -17,7 +17,15 @@ import os
 import hashlib
 import platform
 import time
+import subprocess
 import websockets
+
+BRIDGE_VERSION = "3.2.0"
+
+# Temperature thresholds (Celsius)
+TEMP_THROTTLE = 80  # Start throttling at 80°C
+TEMP_STOP = 90      # Stop mining at 90°C
+TEMP_RESUME = 70    # Resume at 70°C
 
 # Generate a unique client ID (persisted in a file)
 def get_or_create_client_id():
@@ -36,13 +44,70 @@ def get_or_create_client_id():
         f.write(client_id)
     return client_id
 
+def get_cpu_temp():
+    """Get CPU temperature (cross-platform)"""
+    temp = None
+    
+    # Windows: Try WMI
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ['powershell', '-Command', 
+                 'Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" | Select-Object -ExpandProperty CurrentTemperature'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # WMI returns temp in tenths of Kelvin
+                temp_kelvin = float(result.stdout.strip().split('\n')[0]) / 10
+                temp = temp_kelvin - 273.15
+        except:
+            pass
+    
+    # Linux: Try multiple methods
+    elif platform.system() == "Linux":
+        # Method 1: thermal_zone
+        try:
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                temp = int(f.read().strip()) / 1000.0
+        except:
+            pass
+        
+        # Method 2: hwmon
+        if temp is None:
+            try:
+                import glob
+                for hwmon in glob.glob('/sys/class/hwmon/hwmon*/temp1_input'):
+                    try:
+                        with open(hwmon, 'r') as f:
+                            temp = int(f.read().strip()) / 1000.0
+                            break
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Method 3: Raspberry Pi (vcgencmd)
+        if temp is None:
+            try:
+                result = subprocess.run(['vcgencmd', 'measure_temp'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # Output: "temp=42.8'C"
+                    import re
+                    match = re.search(r'temp=([0-9.]+)', result.stdout)
+                    if match:
+                        temp = float(match.group(1))
+            except:
+                pass
+    
+    return temp
+
 BRIDGE_CLIENT_ID = get_or_create_client_id()
 
 # Configuration
 PROXY_WS_URL = f"wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy?clientId={BRIDGE_CLIENT_ID}"
 LOCAL_PORT = 3333
 
-print(f"[Bridge] Client ID: {BRIDGE_CLIENT_ID}")
+print(f"[Bridge v{BRIDGE_VERSION}] Client ID: {BRIDGE_CLIENT_ID}")
 print(f"[Bridge] Proxy URL: {PROXY_WS_URL}")
 
 # Store the current job
@@ -50,6 +115,12 @@ current_job = None
 ws_connection = None
 stratum_clients = {}
 client_id = 0
+
+# Temperature status tracking
+current_status = "mining"  # "mining", "temp-throttle", "temp-stop"
+current_temp = None
+is_throttled = False
+is_temp_stopped = False
 
 async def handle_stratum_client(reader, writer):
     """Handle incoming XMRig connection"""
@@ -158,6 +229,62 @@ async def broadcast_job_to_xmrig(job):
         except:
             pass
 
+async def send_status_update():
+    """Send temperature status to proxy server"""
+    global ws_connection, current_status, current_temp
+    
+    if ws_connection:
+        try:
+            status_msg = {
+                'type': 'status_update',
+                'params': {
+                    'status': current_status,
+                    'temperature': current_temp,
+                    'throttled': is_throttled,
+                    'tempStopped': is_temp_stopped,
+                    'version': BRIDGE_VERSION
+                }
+            }
+            await ws_connection.send(json.dumps(status_msg))
+        except:
+            pass
+
+async def temperature_monitor():
+    """Monitor CPU temperature and update status"""
+    global current_status, current_temp, is_throttled, is_temp_stopped
+    
+    while True:
+        temp = get_cpu_temp()
+        current_temp = temp
+        
+        if temp is not None:
+            old_status = current_status
+            
+            if temp >= TEMP_STOP:
+                current_status = "temp-stop"
+                is_temp_stopped = True
+                if old_status != current_status:
+                    print(f"[Bridge] 🔥 TEMP CRITICAL: {temp:.0f}°C - Status: temp-stop")
+                    
+            elif temp >= TEMP_THROTTLE:
+                current_status = "temp-throttle"
+                is_throttled = True
+                is_temp_stopped = False
+                if old_status != current_status:
+                    print(f"[Bridge] ⚠️  TEMP HIGH: {temp:.0f}°C - Status: temp-throttle")
+                    
+            elif temp < TEMP_RESUME:
+                current_status = "mining"
+                is_throttled = False
+                is_temp_stopped = False
+                if old_status != current_status:
+                    print(f"[Bridge] ✓ TEMP OK: {temp:.0f}°C - Status: mining")
+        
+        # Send status update to proxy
+        await send_status_update()
+        
+        await asyncio.sleep(10)
+
 async def websocket_handler():
     """Connect to proxy server via WebSocket"""
     global ws_connection, current_job
@@ -203,10 +330,14 @@ async def websocket_handler():
 
 async def main():
     print("=" * 60)
-    print("  WebSocket-to-Stratum Bridge for Native Miners")
+    print(f"  WebSocket-to-Stratum Bridge v{BRIDGE_VERSION}")
     print("=" * 60)
     print(f"  Proxy: {PROXY_WS_URL}")
     print(f"  Local Stratum: stratum+tcp://127.0.0.1:{LOCAL_PORT}")
+    print(f"  Temperature Monitoring: Enabled")
+    print(f"    - Throttle at: {TEMP_THROTTLE}°C")
+    print(f"    - Stop at: {TEMP_STOP}°C")
+    print(f"    - Resume at: {TEMP_RESUME}°C")
     print("=" * 60)
     print()
     print("Point your XMRig to: stratum+tcp://127.0.0.1:3333")
@@ -223,10 +354,14 @@ async def main():
     # Start WebSocket handler
     ws_task = asyncio.create_task(websocket_handler())
     
+    # Start temperature monitor
+    temp_task = asyncio.create_task(temperature_monitor())
+    
     async with stratum_server:
         await asyncio.gather(
             stratum_server.serve_forever(),
-            ws_task
+            ws_task,
+            temp_task
         )
 
 if __name__ == '__main__':

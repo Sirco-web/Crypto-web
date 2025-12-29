@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.2';
+const SERVER_VERSION = '4.3.3';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -946,7 +946,10 @@ const server = http.createServer(async (req, res) => {
         cores: miner.cores,
         threads: miner.threads,
         throttle: miner.throttle,
-        status: miner.status
+        status: miner.status,
+        temperature: miner.temperature,
+        tempStopped: miner.tempStopped,
+        throttled: miner.throttled
       });
     }
     
@@ -969,7 +972,11 @@ const server = http.createServer(async (req, res) => {
         wallet: CONFIG.pool.wallet.slice(0, 8) + '...' + CONFIG.pool.wallet.slice(-8),
         workerName: CONFIG.pool.workerName,
         autoMode: CONFIG.pool.autoMode,
-        difficulty: CONFIG.pool.difficulty
+        difficulty: CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty
+      },
+      config: {
+        autoMode: CONFIG.pool.autoMode,
+        difficulty: CONFIG.pool.autoMode ? calculateOptimalDifficulty() : CONFIG.pool.difficulty
       },
       mining: {
         combinedHashrate: globalStats.combinedHashrate,
@@ -1272,6 +1279,19 @@ const server = http.createServer(async (req, res) => {
         miner.hashrate = 0;
         console.log(`[Owner] Miner #${minerId} status set to stopped`);
       } else if (action === 'start') {
+        // Check if miner is temp-stopped (overheating) - prevent force start
+        if (miner.status === 'temp-stop' || miner.tempStopped) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({ 
+            success: false, 
+            error: 'Cannot start miner - CPU temperature is too high. Wait for it to cool down.',
+            status: miner.status,
+            temperature: miner.temperature
+          }));
+          console.log(`[Owner] BLOCKED start for miner #${minerId} - temp-stop active (${miner.temperature?.toFixed(0) || '?'}°C)`);
+          return;
+        }
         // Update miner status to starting
         miner.status = 'starting';
         console.log(`[Owner] Miner #${minerId} status set to starting`);
@@ -1391,11 +1411,20 @@ const server = http.createServer(async (req, res) => {
       }
       console.log(`[Owner] All miners set to STOPPED status`);
     } else if (action === 'start') {
-      // Set all miners to starting status
+      // Set miners to starting status, but skip temp-stopped miners
+      let skippedCount = 0;
       for (const [id, miner] of globalStats.activeMiners) {
+        if (miner.status === 'temp-stop' || miner.tempStopped) {
+          skippedCount++;
+          console.log(`[Owner] Skipped temp-stopped miner #${id} (${miner.temperature?.toFixed(0) || '?'}°C)`);
+          continue;
+        }
         miner.status = 'starting';
       }
-      console.log(`[Owner] All miners set to STARTING status`);
+      if (skippedCount > 0) {
+        console.log(`[Owner] ${skippedCount} miner(s) skipped due to temp-stop`);
+      }
+      console.log(`[Owner] All eligible miners set to STARTING status`);
     }
     
     console.log(`[Owner] Sent ${action.toUpperCase()} command to ${count} control clients`);
@@ -1905,6 +1934,17 @@ wss.on('connection', (ws, req) => {
           activeMiner.lastUpdate = Date.now();
           console.log(`[${logId}] Info: ${activeMiner.cores} cores, ${activeMiner.threads} threads, ${activeMiner.hashrate} H/s, status: ${activeMiner.status}`);
         }
+      }
+      // Temperature/status update from native miners
+      else if (msg.type === 'status_update' && activeMiner) {
+        if (msg.params.status) activeMiner.status = msg.params.status;
+        if (msg.params.temperature !== undefined && msg.params.temperature !== null) {
+          activeMiner.temperature = msg.params.temperature;
+        }
+        if (msg.params.throttled !== undefined) activeMiner.throttled = msg.params.throttled;
+        if (msg.params.tempStopped !== undefined) activeMiner.tempStopped = msg.params.tempStopped;
+        activeMiner.lastUpdate = Date.now();
+        console.log(`[${logId}] Status update: ${activeMiner.status}, temp: ${activeMiner.temperature?.toFixed(0) || 'N/A'}°C`);
       }
       // Keep-alive ping
       else if (msg.type === 'ping') {
@@ -2716,24 +2756,37 @@ function generateDashboardHTML() {
             <th>IP Address</th>
             <th>Hashrate</th>
             <th>Status</th>
+            <th>Temp</th>
             <th>Shares</th>
             <th>Connected</th>
           </tr>
         </thead>
         <tbody id="minersTableBody">
           ${globalStats.activeMiners.size === 0 ? 
-            '<tr><td colspan="7" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>' : 
+            '<tr><td colspan="8" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>' : 
             Array.from(globalStats.activeMiners.values()).map(m => {
-              const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
-              const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
-              const statusText = m.status || 'mining';
+              let statusColor, statusIcon, statusText;
+              if (m.status === 'temp-stop') {
+                statusColor = '#f85149'; statusIcon = '🔥'; statusText = 'Temp Stop';
+              } else if (m.status === 'temp-throttle') {
+                statusColor = '#f7931a'; statusIcon = '⚠️'; statusText = 'Throttled';
+              } else if (m.status === 'mining') {
+                statusColor = '#3fb950'; statusIcon = '●'; statusText = 'Mining';
+              } else if (m.status === 'stopped') {
+                statusColor = '#f85149'; statusIcon = '◼'; statusText = 'Stopped';
+              } else {
+                statusColor = '#f7931a'; statusIcon = '◐'; statusText = m.status || 'Unknown';
+              }
+              const tempColor = m.temperature >= 80 ? '#f85149' : m.temperature >= 60 ? '#f7931a' : '#3fb950';
+              const tempDisplay = m.temperature !== undefined && m.temperature !== null ? `<span style="color:${tempColor}">${m.temperature.toFixed(0)}°C</span>` : '-';
               return `
           <tr>
             <td><span class="status" style="background: ${statusColor}"></span>#${m.id}</td>
             <td>${m.workerType || '🖥️'}</td>
             <td>${m.ip}</td>
             <td style="color: #f7931a; font-weight: bold;">${(m.hashrate || 0).toFixed(1)} H/s</td>
-            <td style="color: ${statusColor};">${statusIcon} ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}</td>
+            <td style="color: ${statusColor};">${statusIcon} ${statusText}</td>
+            <td>${tempDisplay}</td>
             <td>${m.hashes}</td>
             <td>${formatUptime(Math.floor((Date.now() - m.connected) / 1000))}</td>
           </tr>
@@ -2819,13 +2872,39 @@ function generateDashboardHTML() {
         // Update miners table with hashrates
         const tbody = document.getElementById('minersTableBody');
         if (data.miners.list.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="7" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="color: #8b949e; text-align: center;">No workers connected yet</td></tr>';
         } else {
           tbody.innerHTML = data.miners.list.map(m => {
-            const statusColor = m.status === 'mining' ? '#3fb950' : m.status === 'stopped' ? '#f85149' : '#f7931a';
-            const statusIcon = m.status === 'mining' ? '●' : m.status === 'stopped' ? '◼' : '◐';
-            const statusText = m.status || 'mining';
-            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #f7931a; font-weight: bold;">' + (m.hashrate || 0).toFixed(1) + ' H/s</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText.charAt(0).toUpperCase() + statusText.slice(1) + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
+            // Status colors and icons based on status
+            let statusColor, statusIcon, statusText;
+            if (m.status === 'temp-stop') {
+              statusColor = '#f85149'; // Red
+              statusIcon = '🔥';
+              statusText = 'Temp Stop';
+            } else if (m.status === 'temp-throttle') {
+              statusColor = '#f7931a'; // Orange
+              statusIcon = '⚠️';
+              statusText = 'Throttled';
+            } else if (m.status === 'mining') {
+              statusColor = '#3fb950'; // Green
+              statusIcon = '●';
+              statusText = 'Mining';
+            } else if (m.status === 'stopped') {
+              statusColor = '#f85149'; // Red
+              statusIcon = '◼';
+              statusText = 'Stopped';
+            } else {
+              statusColor = '#f7931a'; // Orange
+              statusIcon = '◐';
+              statusText = m.status || 'Unknown';
+            }
+            
+            // Temperature display
+            const tempDisplay = m.temperature !== undefined && m.temperature !== null 
+              ? '<span style="color: ' + (m.temperature >= 80 ? '#f85149' : m.temperature >= 60 ? '#f7931a' : '#3fb950') + ';">' + m.temperature.toFixed(0) + '°C</span>' 
+              : '-';
+            
+            return '<tr><td><span class="status" style="background: ' + statusColor + '"></span>#' + m.id + '</td><td>' + (m.workerType || '🖥️') + '</td><td>' + m.ip + '</td><td style="color: #f7931a; font-weight: bold;">' + (m.hashrate || 0).toFixed(1) + ' H/s</td><td style="color: ' + statusColor + ';">' + statusIcon + ' ' + statusText + '</td><td>' + tempDisplay + '</td><td>' + m.hashes + '</td><td>' + formatUptime(Math.floor((Date.now() - m.connected) / 1000)) + '</td></tr>';
           }).join('');
         }
         

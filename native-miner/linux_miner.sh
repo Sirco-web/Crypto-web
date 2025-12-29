@@ -16,7 +16,7 @@ set -e
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION="3.1.0"
+CLIENT_VERSION="3.2.0"
 WORKER_NAME="linux-miner"
 
 # Proxy server settings

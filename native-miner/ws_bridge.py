@@ -19,13 +19,18 @@ import platform
 import time
 import subprocess
 import websockets
+import signal
 
-BRIDGE_VERSION = "3.5.0"
+BRIDGE_VERSION = "3.6.0"
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80  # Start throttling at 80°C
 TEMP_STOP = 90      # Stop mining at 90°C
 TEMP_RESUME = 70    # Resume at 70°C
+
+# Mining control flags
+mining_paused = False  # True when server says to pause
+mining_stopped_by_temp = False  # True when temp is too high
 
 # Generate a unique client ID (persisted in a file)
 def get_or_create_client_id():
@@ -199,10 +204,18 @@ def target_to_difficulty(target):
 
 async def handle_stratum_client(reader, writer):
     """Handle incoming XMRig connection"""
-    global client_id
+    global client_id, mining_paused, pool_suspended
     client_id += 1
     cid = client_id
     addr = writer.get_extra_info('peername')
+    
+    # Reject connections when mining is paused
+    if mining_paused or pool_suspended:
+        print(f"[Bridge] XMRig #{cid} rejected - mining is paused")
+        writer.close()
+        await writer.wait_closed()
+        return
+    
     print(f"[Bridge] XMRig #{cid} connected from {addr}")
     
     stratum_clients[cid] = {'reader': reader, 'writer': writer}
@@ -307,21 +320,92 @@ async def broadcast_job_to_xmrig(job):
         except:
             pass
 
+async def handle_server_command(msg):
+    """Handle commands from the proxy server"""
+    global mining_paused, pool_suspended, stratum_clients
+    
+    action = msg.get('action', '')
+    reason = msg.get('reason', '')
+    threads = msg.get('threads')
+    
+    if action == 'stop':
+        mining_paused = True
+        pool_suspended = True
+        print(f"[Bridge] ⛔ STOP COMMAND: {reason}")
+        print("[Bridge] Mining paused - will resume when server sends start command")
+        # Disconnect XMRig to stop mining
+        await disconnect_all_xmrig()
+        
+    elif action == 'start':
+        mining_paused = False
+        pool_suspended = False
+        print(f"[Bridge] ✅ START COMMAND: {reason}")
+        print("[Bridge] Mining can resume - XMRig will reconnect")
+        
+    elif action == 'pause':
+        mining_paused = True
+        print(f"[Bridge] ⏸️ PAUSE COMMAND: {reason}")
+        await disconnect_all_xmrig()
+        
+    elif action == 'resume':
+        mining_paused = False
+        print(f"[Bridge] ▶️ RESUME COMMAND: {reason}")
+        
+    elif action == 'kick':
+        print(f"[Bridge] 👢 KICK COMMAND: Disconnecting...")
+        await disconnect_all_xmrig()
+        # Exit the bridge
+        sys.exit(0)
+        
+    elif action == 'setThreads':
+        if threads:
+            print(f"[Bridge] 🔧 SET THREADS: {threads}")
+            # XMRig doesn't support dynamic thread changes via stratum
+            # User would need to restart with different config
+            print("[Bridge] Note: Thread changes require XMRig restart")
+
+async def disconnect_all_xmrig():
+    """Disconnect all connected XMRig instances"""
+    global stratum_clients
+    for cid, client in list(stratum_clients.items()):
+        try:
+            client['writer'].close()
+            await client['writer'].wait_closed()
+        except:
+            pass
+    stratum_clients.clear()
+    print("[Bridge] All XMRig instances disconnected")
+
 async def send_status_update():
     """Send temperature and hashrate status to proxy server"""
-    global ws_connection, current_status, current_temp, current_hashrate
+    global ws_connection, current_status, current_temp, current_hashrate, mining_paused, pool_suspended
     
     if ws_connection:
         try:
+            # Determine effective status
+            if pool_suspended:
+                effective_status = "pool-suspended"
+            elif mining_paused:
+                effective_status = "paused"
+            elif is_temp_stopped:
+                effective_status = "temp-stop"
+            elif is_throttled:
+                effective_status = "temp-throttle"
+            else:
+                effective_status = current_status
+            
             status_msg = {
                 'type': 'status_update',
                 'params': {
-                    'status': current_status,
+                    'status': effective_status,
                     'temperature': current_temp,
-                    'hashrate': current_hashrate,  # Include hashrate!
+                    'hashrate': current_hashrate if not mining_paused else 0.0,
                     'throttled': is_throttled,
                     'tempStopped': is_temp_stopped,
-                    'version': BRIDGE_VERSION
+                    'poolSuspended': pool_suspended,
+                    'paused': mining_paused,
+                    'version': BRIDGE_VERSION,
+                    'activeClients': len(stratum_clients)
                 }
             }
             await ws_connection.send(json.dumps(status_msg))
@@ -425,27 +509,24 @@ async def websocket_handler():
                                 print("[Bridge] 📤 Share submitted to pool!")
                             elif status == 'error':
                                 print(f"[Bridge] ⚠️ Share error: {msg.get('reason', 'unknown')}")
+                        
+                        elif msg_type == 'pong':
+                            # Response to our ping - connection is alive
+                            pass
                             
                         elif msg_type == 'command':
-                            # Handle commands from proxy (suspend/resume)
-                            action = msg.get('action', '')
-                            reason = msg.get('reason', '')
-                            if action == 'stop':
-                                pool_suspended = True
-                                print(f"[Bridge] ⛔ POOL SUSPENDED: {reason}")
-                                print("[Bridge] Mining paused - waiting for pool to resume...")
-                            elif action == 'start':
-                                pool_suspended = False
-                                print(f"[Bridge] ✅ POOL RESUMED: {reason}")
-                                print("[Bridge] Mining resumed!")
+                            # Handle commands from proxy server
+                            await handle_server_command(msg)
                             
                         elif msg_type == 'error':
                             error_msg = msg.get('params', {}).get('error', str(msg))
                             print(f"[Bridge] ❌ Error: {error_msg}")
                             # Check for suspension
                             if 'suspended' in str(error_msg).lower():
+                                global pool_suspended, mining_paused
                                 pool_suspended = True
-                                print("[Bridge] ⛔ Pool IP suspended - waiting for cooloff...")
+                                mining_paused = True
+                                print("[Bridge] ⛔ Pool IP suspended - mining paused...")
                             
                     except json.JSONDecodeError:
                         pass

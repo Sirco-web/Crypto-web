@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.4.3';
+const SERVER_VERSION = '4.4.4';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -2115,6 +2115,10 @@ wss.on('connection', (ws, req) => {
         }
         if (msg.params.throttled !== undefined) activeMiner.throttled = msg.params.throttled;
         if (msg.params.tempStopped !== undefined) activeMiner.tempStopped = msg.params.tempStopped;
+        if (msg.params.poolSuspended !== undefined) activeMiner.poolSuspended = msg.params.poolSuspended;
+        if (msg.params.paused !== undefined) activeMiner.paused = msg.params.paused;
+        if (msg.params.version) activeMiner.bridgeVersion = msg.params.version;
+        if (msg.params.activeClients !== undefined) activeMiner.activeClients = msg.params.activeClients;
         activeMiner.lastUpdate = Date.now();
         console.log(`[${logId}] Status update: ${activeMiner.status}, temp: ${activeMiner.temperature?.toFixed(0) || 'N/A'}°C, hashrate: ${activeMiner.hashrate?.toFixed(1) || 0} H/s`);
       }

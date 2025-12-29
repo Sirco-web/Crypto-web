@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.7';
+const SERVER_VERSION = '4.3.8';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -433,16 +433,12 @@ function getWorkerDifficulties() {
 // Calculate pool difficulty - use low difficulty so shares can be found
 // Pool will accept any share that meets its target
 function calculatePoolDifficulty() {
-  // Use a reasonable base difficulty that allows shares to be found
-  // The pool's actual difficulty from its target is what matters for validation
   return getPoolDifficulty();
 }
 
 // Legacy function for compatibility
 function calculateOptimalDifficulty() {
   return getPoolDifficulty();
-}
-  return calculatePoolDifficulty();
 }
 
 // Get optimal port based on difficulty
@@ -904,7 +900,6 @@ function addRecentJob(job) {
 
 function submitToPool(params, minerId = null) {
   console.log('[Pool] Submit request received:', JSON.stringify(params));
-  console.log('[Pool] Recent jobs:', [...recentJobs.keys()].join(', ') || 'EMPTY');
   
   if (!sharedPool || !sharedPool.writable) {
     console.log('[Pool] ❌ Cannot submit - pool not connected');
@@ -917,50 +912,15 @@ function submitToPool(params, minerId = null) {
   }
   
   // Check if this share is for a RECENT job (allow slightly stale shares)
-  const job = recentJobs.get(params.job_id);
-  if (!job) {
+  if (!recentJobs.has(params.job_id)) {
     console.log('[Pool] ⚠️ Rejecting share - job_id not in recent list');
     console.log(`[Pool]    Share job_id: ${params.job_id}`);
     console.log(`[Pool]    Recent jobs: ${[...recentJobs.keys()].join(', ')}`);
     return { submitted: false, reason: 'stale_job' };
   }
   
-  // Get the pool's actual target for this job
-  const poolTarget = job.target;
-  const poolDiff = targetToDifficulty(poolTarget);
-  
-  // Check if the share result meets the pool's target
-  // The result is a 64-char hex hash - we compare the first 8 chars against target
-  const resultPrefix = params.result ? params.result.substring(56, 64) : '';  // Last 8 chars (big-endian)
-  const resultValue = parseInt(resultPrefix, 16);
-  const poolTargetValue = parseInt(poolTarget.substring(0, 8), 16);
-  
-  const meetsPoolTarget = resultValue <= poolTargetValue;
-  
-  // Get worker info for logging
-  const miner = minerId ? globalStats.activeMiners.get(minerId) : null;
-  const workerDiff = miner ? (miner.currentDifficulty || 1000) : 1000;
-  
-  console.log(`[Pool] Share check: result=${resultPrefix} (${resultValue}), pool_target=${poolTarget.substring(0,8)} (${poolTargetValue})`);
-  console.log(`[Pool] Worker diff: ${workerDiff}, Pool diff: ${poolDiff}, Meets pool target: ${meetsPoolTarget}`);
-  
-  if (!meetsPoolTarget) {
-    // Share met worker's target but not pool's - count as worker share only
-    console.log('[Pool] ⚡ Share meets worker target but not pool target - counted locally only');
-    if (miner) {
-      miner.workerShares = (miner.workerShares || 0) + 1;
-    }
-    return { submitted: false, reason: 'below_pool_target', workerShare: true };
-  }
-  
-  console.log('[Pool] ✓ Share meets pool target, submitting to pool...');
-  
-  // Log if it's not the current job but still valid
-  if (currentJob && params.job_id !== currentJob.job_id) {
-    console.log('[Pool] 📤 Submitting slightly stale share (still in recent jobs)');
-  }
-  
-  console.log('[Pool] Submitting share:', JSON.stringify(params));
+  // Just submit it! Let the pool decide if it's good or not
+  console.log('[Pool] ✓ Submitting share to pool...');
   
   const msg = {
     id: Date.now(),
@@ -2067,11 +2027,9 @@ wss.on('connection', (ws, req) => {
           
           // Send result back to worker
           if (result.submitted) {
-            ws.send(JSON.stringify({ type: 'share_result', status: 'submitted', message: 'Share submitted to pool' }));
-          } else if (result.workerShare) {
-            ws.send(JSON.stringify({ type: 'share_result', status: 'worker_only', message: 'Share counted locally (below pool difficulty)' }));
+            ws.send(JSON.stringify({ type: 'share_result', status: 'submitted', message: 'Share submitted to pool!' }));
           } else {
-            ws.send(JSON.stringify({ type: 'share_result', status: 'rejected', reason: result.reason }));
+            ws.send(JSON.stringify({ type: 'share_result', status: 'error', reason: result.reason }));
           }
         }
         globalStats.totalHashes++;

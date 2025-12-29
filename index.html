@@ -317,10 +317,8 @@
             // Handle share submission result from proxy
             if (e.status === 'submitted') {
               log('📤 Share submitted to pool!', 'success');
-            } else if (e.status === 'worker_only') {
-              log('⚡ Share counted locally (building up...)', 'info');
-            } else if (e.status === 'rejected') {
-              log('⚠️ Share: ' + (e.reason || 'rejected'), 'warning');
+            } else if (e.status === 'error') {
+              log('⚠️ Share error: ' + (e.reason || 'unknown'), 'warning');
             }
             break;
           case 'accepted':

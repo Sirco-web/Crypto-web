@@ -34,6 +34,28 @@ This document explains all fixes applied to the XMR Web Miner, how the system wo
 
 ## 🚀 Latest Changes
 
+### v4.3.8 (December 29, 2025)
+**Simplified Share Submission - Just Submit Everything!**
+
+**Problem:** Previous version had complex logic checking if shares met pool target before submitting. This was unnecessary - just let the pool decide!
+
+**Changes:**
+- ✅ Removed share validation logic - ALL shares are submitted to pool
+- ✅ Pool decides if share is good or not (that's its job)
+- ✅ Simplified `submitToPool()` function
+- ✅ Cleaned up duplicate/leftover code
+- ✅ Web miner shows simpler share result messages
+
+**How It Works Now:**
+1. Worker finds share at their difficulty target
+2. Proxy immediately submits to pool
+3. Pool accepts or rejects
+4. Result sent back to worker
+
+**Files Changed:** `proxy/server.js`, `index.html`, `config.js`, `FIXES.md`
+
+---
+
 ### v4.3.7 (December 29, 2025)
 **TRUE Per-Worker Difficulty System**
 

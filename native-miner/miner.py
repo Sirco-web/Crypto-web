@@ -25,7 +25,7 @@ import hashlib
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION = "3.4.0"  # Updated with live status bar
+CLIENT_VERSION = "3.5.0"  # Fixed WebSocket keepalive and hashrate reporting
 WORKER_NAME = "windows-miner"
 
 # Generate a unique client ID (persisted in a file)

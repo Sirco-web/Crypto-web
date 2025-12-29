@@ -20,7 +20,7 @@ import time
 import subprocess
 import websockets
 
-BRIDGE_VERSION = "3.4.0"
+BRIDGE_VERSION = "3.5.0"
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80  # Start throttling at 80°C
@@ -48,18 +48,49 @@ def get_cpu_temp():
     """Get CPU temperature (cross-platform)"""
     temp = None
     
-    # Windows: Try WMI
+    # Windows: Try multiple methods
     if platform.system() == "Windows":
+        # Method 1: WMI MSAcpi_ThermalZoneTemperature (requires admin on most systems)
         try:
             result = subprocess.run(
                 ['powershell', '-Command', 
-                 'Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" | Select-Object -ExpandProperty CurrentTemperature'],
+                 'Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" 2>$null | Select-Object -ExpandProperty CurrentTemperature -First 1'],
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0 and result.stdout.strip():
                 # WMI returns temp in tenths of Kelvin
                 temp_kelvin = float(result.stdout.strip().split('\n')[0]) / 10
                 temp = temp_kelvin - 273.15
+                if temp > 0 and temp < 120:  # Sanity check
+                    return temp
+        except:
+            pass
+        
+        # Method 2: Try Open Hardware Monitor WMI (if installed)
+        try:
+            result = subprocess.run(
+                ['powershell', '-Command', 
+                 'Get-WmiObject -Namespace "root/OpenHardwareMonitor" -Class Sensor 2>$null | Where-Object {$_.SensorType -eq "Temperature" -and $_.Name -match "CPU"} | Select-Object -ExpandProperty Value -First 1'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                temp = float(result.stdout.strip())
+                if temp > 0 and temp < 120:
+                    return temp
+        except:
+            pass
+        
+        # Method 3: Try LibreHardwareMonitor WMI
+        try:
+            result = subprocess.run(
+                ['powershell', '-Command', 
+                 'Get-WmiObject -Namespace "root/LibreHardwareMonitor" -Class Sensor 2>$null | Where-Object {$_.SensorType -eq "Temperature" -and $_.Name -match "CPU"} | Select-Object -ExpandProperty Value -First 1'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                temp = float(result.stdout.strip())
+                if temp > 0 and temp < 120:
+                    return temp
         except:
             pass
     
@@ -119,10 +150,52 @@ client_id = 0
 # Temperature status tracking
 current_status = "mining"  # "mining", "temp-throttle", "temp-stop", "pool-suspended"
 current_temp = None
+current_hashrate = 0.0  # Track hashrate from XMRig
+current_difficulty = 1000  # Worker difficulty from job target
 is_throttled = False
 is_temp_stopped = False
 pool_suspended = False
 suspension_remaining = 0
+
+# Hashrate estimation from share rate
+share_times = []  # Timestamps of recent share submissions
+HASHRATE_WINDOW = 60  # Calculate hashrate over last 60 seconds
+
+def estimate_hashrate():
+    """Estimate hashrate from share submission rate and difficulty"""
+    global share_times, current_difficulty, current_hashrate
+    
+    now = time.time()
+    # Remove old shares outside window
+    share_times = [t for t in share_times if now - t < HASHRATE_WINDOW]
+    
+    if len(share_times) >= 2:
+        # Hashrate = (shares * difficulty) / time_span
+        time_span = now - share_times[0]
+        if time_span > 0:
+            # shares/second * difficulty = hashes/second
+            shares_per_sec = len(share_times) / time_span
+            current_hashrate = shares_per_sec * current_difficulty
+    elif len(share_times) == 1:
+        # Single share - estimate based on expected time
+        # At diff D, expected time per share = D / hashrate
+        # If we got a share, estimate hashrate = D / time_since_share
+        time_since = now - share_times[0]
+        if time_since > 1:
+            current_hashrate = current_difficulty / time_since
+    
+    return current_hashrate
+
+def target_to_difficulty(target):
+    """Convert stratum target to difficulty (little-endian)"""
+    if not target or len(target) < 8:
+        return 1000
+    # Reverse bytes for little-endian
+    reversed_hex = ''.join(reversed([target[i:i+2] for i in range(0, 8, 2)]))
+    target_value = int(reversed_hex, 16)
+    if target_value == 0:
+        return 1000000
+    return int(0xFFFFFFFF / target_value)
 
 async def handle_stratum_client(reader, writer):
     """Handle incoming XMRig connection"""
@@ -159,7 +232,7 @@ async def handle_stratum_client(reader, writer):
 
 async def handle_stratum_message(cid, msg, writer):
     """Handle message from XMRig"""
-    global current_job, ws_connection
+    global current_job, ws_connection, share_times, current_hashrate
     
     method = msg.get('method')
     msg_id = msg.get('id')
@@ -182,7 +255,10 @@ async def handle_stratum_message(cid, msg, writer):
         await writer.drain()
         
     elif method == 'submit':
-        print(f"[Bridge] #{cid} Share submitted")
+        # Record share time for hashrate estimation
+        share_times.append(time.time())
+        hr = estimate_hashrate()
+        print(f"[Bridge] #{cid} Share submitted (est. {hr:.1f} H/s)")
         
         # Forward to WebSocket
         if ws_connection:
@@ -232,8 +308,8 @@ async def broadcast_job_to_xmrig(job):
             pass
 
 async def send_status_update():
-    """Send temperature status to proxy server"""
-    global ws_connection, current_status, current_temp
+    """Send temperature and hashrate status to proxy server"""
+    global ws_connection, current_status, current_temp, current_hashrate
     
     if ws_connection:
         try:
@@ -242,6 +318,7 @@ async def send_status_update():
                 'params': {
                     'status': current_status,
                     'temperature': current_temp,
+                    'hashrate': current_hashrate,  # Include hashrate!
                     'throttled': is_throttled,
                     'tempStopped': is_temp_stopped,
                     'version': BRIDGE_VERSION
@@ -287,6 +364,16 @@ async def temperature_monitor():
         
         await asyncio.sleep(10)
 
+async def websocket_keepalive(ws):
+    """Send periodic pings to keep the WebSocket connection alive"""
+    while True:
+        try:
+            if ws.open:
+                await ws.send(json.dumps({'type': 'ping'}))
+            await asyncio.sleep(15)  # Ping every 15 seconds
+        except:
+            break
+
 async def websocket_handler():
     """Connect to proxy server via WebSocket"""
     global ws_connection, current_job, pool_suspended
@@ -294,9 +381,19 @@ async def websocket_handler():
     while True:
         try:
             print(f"[Bridge] Connecting to {PROXY_WS_URL}...")
-            async with websockets.connect(PROXY_WS_URL) as ws:
+            # Use longer timeouts for cloud environments
+            async with websockets.connect(
+                PROXY_WS_URL,
+                ping_interval=20,       # Send ping every 20 seconds
+                ping_timeout=30,        # Wait 30 seconds for pong
+                close_timeout=10,       # Wait 10 seconds for close
+                max_size=10*1024*1024,  # 10MB max message size
+            ) as ws:
                 ws_connection = ws
                 print("[Bridge] Connected to proxy server!")
+                
+                # Start keepalive task
+                keepalive_task = asyncio.create_task(websocket_keepalive(ws))
                 
                 # Send auth
                 await ws.send(json.dumps({'type': 'auth', 'params': {}}))
@@ -311,7 +408,12 @@ async def websocket_handler():
                             
                         elif msg_type == 'job':
                             job = msg.get('params', {})
-                            print(f"[Bridge] New job: {job.get('job_id', 'unknown')[:16]}...")
+                            # Extract difficulty from target
+                            target = job.get('target', '')
+                            if target:
+                                global current_difficulty
+                                current_difficulty = target_to_difficulty(target)
+                            print(f"[Bridge] New job: {job.get('job_id', 'unknown')[:16]}... (diff: {current_difficulty})")
                             await broadcast_job_to_xmrig(job)
                             
                         elif msg_type == 'hash_accepted':
@@ -347,7 +449,12 @@ async def websocket_handler():
                             
                     except json.JSONDecodeError:
                         pass
+                
+                # Cancel keepalive when loop exits
+                keepalive_task.cancel()
                         
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             print(f"[Bridge] WebSocket error: {e}")
             ws_connection = None

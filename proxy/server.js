@@ -14,7 +14,7 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.4.2';
+const SERVER_VERSION = '4.4.3';
 const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
@@ -2104,16 +2104,19 @@ wss.on('connection', (ws, req) => {
           console.log(`[${logId}] Info: ${activeMiner.cores} cores, ${activeMiner.threads} threads, ${activeMiner.hashrate} H/s, status: ${activeMiner.status}`);
         }
       }
-      // Temperature/status update from native miners
+      // Temperature/status update from native miners (includes hashrate)
       else if (msg.type === 'status_update' && activeMiner) {
         if (msg.params.status) activeMiner.status = msg.params.status;
         if (msg.params.temperature !== undefined && msg.params.temperature !== null) {
           activeMiner.temperature = msg.params.temperature;
         }
+        if (msg.params.hashrate !== undefined && msg.params.hashrate !== null) {
+          activeMiner.hashrate = msg.params.hashrate;  // Accept hashrate from bridge!
+        }
         if (msg.params.throttled !== undefined) activeMiner.throttled = msg.params.throttled;
         if (msg.params.tempStopped !== undefined) activeMiner.tempStopped = msg.params.tempStopped;
         activeMiner.lastUpdate = Date.now();
-        console.log(`[${logId}] Status update: ${activeMiner.status}, temp: ${activeMiner.temperature?.toFixed(0) || 'N/A'}°C`);
+        console.log(`[${logId}] Status update: ${activeMiner.status}, temp: ${activeMiner.temperature?.toFixed(0) || 'N/A'}°C, hashrate: ${activeMiner.hashrate?.toFixed(1) || 0} H/s`);
       }
       // Keep-alive ping
       else if (msg.type === 'ping') {

@@ -20,7 +20,7 @@ import time
 import subprocess
 import websockets
 
-BRIDGE_VERSION = "3.2.0"
+BRIDGE_VERSION = "3.4.0"
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80  # Start throttling at 80°C
@@ -117,10 +117,12 @@ stratum_clients = {}
 client_id = 0
 
 # Temperature status tracking
-current_status = "mining"  # "mining", "temp-throttle", "temp-stop"
+current_status = "mining"  # "mining", "temp-throttle", "temp-stop", "pool-suspended"
 current_temp = None
 is_throttled = False
 is_temp_stopped = False
+pool_suspended = False
+suspension_remaining = 0
 
 async def handle_stratum_client(reader, writer):
     """Handle incoming XMRig connection"""
@@ -287,7 +289,7 @@ async def temperature_monitor():
 
 async def websocket_handler():
     """Connect to proxy server via WebSocket"""
-    global ws_connection, current_job
+    global ws_connection, current_job, pool_suspended
     
     while True:
         try:
@@ -315,8 +317,33 @@ async def websocket_handler():
                         elif msg_type == 'hash_accepted':
                             print("[Bridge] ✅ Share accepted by pool!")
                             
+                        elif msg_type == 'share_result':
+                            status = msg.get('status', '')
+                            if status == 'submitted':
+                                print("[Bridge] 📤 Share submitted to pool!")
+                            elif status == 'error':
+                                print(f"[Bridge] ⚠️ Share error: {msg.get('reason', 'unknown')}")
+                            
+                        elif msg_type == 'command':
+                            # Handle commands from proxy (suspend/resume)
+                            action = msg.get('action', '')
+                            reason = msg.get('reason', '')
+                            if action == 'stop':
+                                pool_suspended = True
+                                print(f"[Bridge] ⛔ POOL SUSPENDED: {reason}")
+                                print("[Bridge] Mining paused - waiting for pool to resume...")
+                            elif action == 'start':
+                                pool_suspended = False
+                                print(f"[Bridge] ✅ POOL RESUMED: {reason}")
+                                print("[Bridge] Mining resumed!")
+                            
                         elif msg_type == 'error':
-                            print(f"[Bridge] ❌ Error: {msg.get('params', {}).get('error')}")
+                            error_msg = msg.get('params', {}).get('error', str(msg))
+                            print(f"[Bridge] ❌ Error: {error_msg}")
+                            # Check for suspension
+                            if 'suspended' in str(error_msg).lower():
+                                pool_suspended = True
+                                print("[Bridge] ⛔ Pool IP suspended - waiting for cooloff...")
                             
                     except json.JSONDecodeError:
                         pass

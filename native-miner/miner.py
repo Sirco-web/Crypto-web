@@ -25,7 +25,7 @@ import hashlib
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION = "3.3.0"  # Updated for per-worker difficulty support
+CLIENT_VERSION = "3.4.0"  # Updated with live status bar
 WORKER_NAME = "windows-miner"
 
 # Generate a unique client ID (persisted in a file)
@@ -76,6 +76,62 @@ class Colors:
     BLUE = "\033[94m"
     CYAN = "\033[96m"
     WHITE = "\033[97m"
+    # Cursor control
+    SAVE_CURSOR = "\033[s"
+    RESTORE_CURSOR = "\033[u"
+    CLEAR_LINE = "\033[2K"
+    MOVE_UP = "\033[1A"
+
+# Status bar state
+status_bar = {
+    'hashrate': 0.0,
+    'accepted': 0,
+    'rejected': 0,
+    'uptime': 0,
+    'status': 'Starting...',
+    'temp': None,
+    'difficulty': 0,
+    'pool_suspended': False
+}
+status_bar_enabled = True
+
+def format_uptime(seconds):
+    """Format uptime as H:MM:SS"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+def print_status_bar():
+    """Print the status bar at bottom of terminal"""
+    if not status_bar_enabled:
+        return
+    
+    hr = status_bar['hashrate']
+    acc = status_bar['accepted']
+    rej = status_bar['rejected']
+    up = format_uptime(status_bar['uptime'])
+    st = status_bar['status']
+    temp = status_bar['temp']
+    diff = status_bar['difficulty']
+    suspended = status_bar['pool_suspended']
+    
+    # Build status line
+    if suspended:
+        line = f"{Colors.RED}⛔ POOL SUSPENDED - Waiting for reconnect...{Colors.RESET}"
+    else:
+        temp_str = f" | 🌡️ {temp:.0f}°C" if temp else ""
+        diff_str = f" | Diff: {diff}" if diff > 0 else ""
+        line = f"{Colors.CYAN}⛏️ {hr:.1f} H/s{Colors.RESET} | ✅ {acc} | ❌ {rej} | ⏱️ {up}{temp_str}{diff_str} | {st}"
+    
+    # Print at bottom (save cursor, move to bottom, clear, print, restore)
+    print(f"\r{Colors.CLEAR_LINE}{line}", end='', flush=True)
+
+def log_with_status(msg, color=Colors.WHITE, prefix="[i]"):
+    """Log a message and redraw status bar"""
+    # Clear current line, print message, then status bar
+    print(f"\r{Colors.CLEAR_LINE}{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {color}{prefix}{Colors.RESET} {msg}")
+    print_status_bar()
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -97,19 +153,19 @@ def print_banner():
     print()
 
 def log_info(msg):
-    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.BLUE}[i]{Colors.RESET} {msg}")
+    log_with_status(msg, Colors.BLUE, "[i]")
 
 def log_success(msg):
-    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.GREEN}[+]{Colors.RESET} {msg}")
+    log_with_status(msg, Colors.GREEN, "[+]")
 
 def log_warning(msg):
-    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.YELLOW}[!]{Colors.RESET} {msg}")
+    log_with_status(msg, Colors.YELLOW, "[!]")
 
 def log_error(msg):
-    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.RED}[x]{Colors.RESET} {msg}")
+    log_with_status(msg, Colors.RED, "[x]")
 
 def log_hash(msg):
-    print(f"{Colors.WHITE}[{time.strftime('%H:%M:%S')}] {Colors.CYAN}[#]{Colors.RESET} {msg}")
+    log_with_status(msg, Colors.CYAN, "[#]")
 
 # =============================================================================
 # SYSTEM DETECTION
@@ -530,14 +586,35 @@ def main():
     print()
     log_success("Mining started! Press Ctrl+C to stop.")
     print()
+    print()  # Extra line for status bar
     
-    # Main loop
+    # Main loop - update status bar
+    start_time = time.time()
     try:
         while True:
-            time.sleep(30)
-            if miner.running and miner.hashrate > 0:
-                log_hash(f"Status: {miner.hashrate:.1f} H/s | Accepted: {miner.accepted} | Rejected: {miner.rejected}")
+            time.sleep(1)
+            
+            # Update status bar data
+            status_bar['uptime'] = time.time() - start_time
+            status_bar['hashrate'] = miner.hashrate
+            status_bar['accepted'] = miner.accepted
+            status_bar['rejected'] = miner.rejected
+            status_bar['temp'] = get_cpu_temp()
+            
+            if miner.paused:
+                status_bar['status'] = f"{Colors.RED}PAUSED (temp){Colors.RESET}"
+            elif miner.throttled:
+                status_bar['status'] = f"{Colors.YELLOW}THROTTLED{Colors.RESET}"
+            elif miner.running:
+                status_bar['status'] = f"{Colors.GREEN}Mining{Colors.RESET}"
+            else:
+                status_bar['status'] = f"{Colors.YELLOW}Connecting...{Colors.RESET}"
+            
+            # Redraw status bar
+            print_status_bar()
+            
     except KeyboardInterrupt:
+        print()
         print()
         log_warning("Stopping miner...")
         temp_monitor.stop()

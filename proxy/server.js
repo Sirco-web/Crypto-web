@@ -14,8 +14,8 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.3.8';
-const VERSION_DATE = '2025-12-29';
+const SERVER_VERSION = '4.3.9';
+const VERSION_DATE = '2025-12-30';
 
 // =============================================================================
 // ACTIVITY LOG - Track shares, blocks, events
@@ -1925,9 +1925,37 @@ wss.on('connection', (ws, req) => {
   const miner = (isInfoSocket && existingMiner) ? existingMiner : globalStats.activeMiners.get(clientId);
   const effectiveClientId = (isInfoSocket && existingMiner) ? existingMinerId : clientId;
   
-  // Ensure pool is connected
-  if (!sharedPool) {
-    connectToPool();
+  // Check if suspended - tell new miner immediately
+  if (globalStats.suspended) {
+    const remaining = Math.ceil((globalStats.suspensionEndTime - Date.now()) / 1000 / 60);
+    console.log(`[Miner #${clientId}] 🚫 Connected during suspension, notifying (${remaining}m remaining)`);
+    ws.send(JSON.stringify({ 
+      type: 'command', 
+      action: 'stop', 
+      reason: `Pool suspended IP - ${remaining}m remaining` 
+    }));
+    // Don't try to connect to pool or send jobs
+  } else {
+    // Ensure pool is connected
+    if (!sharedPool) {
+      connectToPool();
+    }
+    
+    // Send current job if available (only if AUTHENTICATED, not just connected)
+    if (poolAuthenticated && currentJob) {
+      ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
+      ws.send(JSON.stringify({
+        type: 'job',
+        params: {
+          job_id: currentJob.job_id,
+          blob: currentJob.blob,
+          target: currentJob.target,
+          seed_hash: currentJob.seed_hash,
+          height: currentJob.height,
+          algo: currentJob.algo || 'rx/0'
+        }
+      }));
+    }
   }
   
   // Keep-alive ping every 20 seconds to prevent Koyeb/cloud timeout
@@ -1938,22 +1966,6 @@ wss.on('connection', (ws, req) => {
       clearInterval(keepAlive);
     }
   }, 20000);
-  
-  // Send current job if available (only if AUTHENTICATED, not just connected)
-  if (poolAuthenticated && currentJob) {
-    ws.send(JSON.stringify({ type: 'authed', params: { hashes: 0 } }));
-    ws.send(JSON.stringify({
-      type: 'job',
-      params: {
-        job_id: currentJob.job_id,
-        blob: currentJob.blob,
-        target: currentJob.target,
-        seed_hash: currentJob.seed_hash,
-        height: currentJob.height,
-        algo: currentJob.algo || 'rx/0'
-      }
-    }));
-  }
   
   ws.on('message', (data) => {
     try {

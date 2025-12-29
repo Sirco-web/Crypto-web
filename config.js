@@ -17,11 +17,11 @@ const CONFIG = {
   PROXY_URL: 'wss://respectable-gilemette-timco-f0e524a9.koyeb.app/proxy',
   
   // Pool settings
-  POOL: 'gulf.moneroocean.stream:10128',
+  POOL: 'gulf.moneroocean.stream:10001',
   
   // Mining algorithm
   ALGORITHM: 'rx/0',
   
   // Version info
-  VERSION: '4.1.4'
+  VERSION: '4.3.2'
 };

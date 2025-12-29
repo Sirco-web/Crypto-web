@@ -361,15 +361,18 @@
       if (typeof knowingtogood === 'function') {
         try {
           // Calculate workers based on BOTH cores AND memory
-          // Each RandomX worker needs ~256MB, plus browser overhead (~2GB)
-          // So for 8GB RAM: (8 - 2) / 0.256 = ~23 max workers (but limited by cores)
+          // Each RandomX worker needs ~300-400MB for dataset + overhead
+          // Browser itself needs ~1.5GB, so be very conservative
           const memoryGB = hardwareInfo.memory || 4;
-          const maxWorkersByMemory = Math.floor((memoryGB - 2) / 0.3); // 300MB per worker to be safe
+          // More conservative: 500MB per worker to account for browser overhead
+          const maxWorkersByMemory = Math.floor((memoryGB - 1.5) / 0.5);
           const maxWorkersByCores = hardwareInfo.cores;
-          const safeWorkers = Math.max(1, Math.min(maxWorkersByMemory, maxWorkersByCores));
+          // Hard cap at 4 workers to prevent OOM on most systems
+          const hardCap = 4;
+          const safeWorkers = Math.max(1, Math.min(maxWorkersByMemory, maxWorkersByCores, hardCap));
           
           const numWorkers = maxPowerEnabled ? safeWorkers : Math.max(1, safeWorkers - 1);
-          log('Memory-safe workers: ' + numWorkers + ' (RAM allows ' + maxWorkersByMemory + ', cores: ' + maxWorkersByCores + ')', 'info');
+          log('Memory-safe workers: ' + numWorkers + ' (RAM: ' + memoryGB + 'GB, max by mem: ' + maxWorkersByMemory + ', cores: ' + maxWorkersByCores + ', cap: ' + hardCap + ')', 'info');
           
           for (let i = 0; i < numWorkers; i++) {
             knowingtogood();
@@ -427,8 +430,9 @@
       
       // Calculate memory-safe target (same formula as startMining)
       const memoryGB = hardwareInfo.memory || 4;
-      const maxWorkersByMemory = Math.floor((memoryGB - 2) / 0.3);
-      const targetWorkers = Math.max(1, Math.min(maxWorkersByMemory, hardwareInfo.cores));
+      const maxWorkersByMemory = Math.floor((memoryGB - 1.5) / 0.5);
+      const hardCap = 4;  // Same hard cap as startMining
+      const targetWorkers = Math.max(1, Math.min(maxWorkersByMemory, hardwareInfo.cores, hardCap));
       
       // Add more workers if needed
       if (currentWorkers < targetWorkers && typeof knowingtogood === 'function') {

@@ -25,7 +25,7 @@ import hashlib
 # =============================================================================
 # CONFIGURATION - CONNECTS THROUGH PROXY
 # =============================================================================
-CLIENT_VERSION = "4.0.0"  # Complete bridge rewrite - stable connections
+CLIENT_VERSION = "4.1.0"  # Threaded bridge for stability
 WORKER_NAME = "windows-miner"
 
 # Generate a unique client ID (persisted in a file)

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-WebSocket-to-Stratum Bridge for Native Miners v4.0.0
-COMPLETELY REWRITTEN for stability.
+WebSocket-to-Stratum Bridge for Native Miners v4.1.0
+SIMPLE THREADED VERSION - No async complexity.
 
 Key improvements:
 - XMRig connection NEVER drops (local stratum always available)
 - WebSocket reconnects automatically in background
 - Shares queued when WebSocket is down
-- Proper hashrate tracking
+- Uses threading instead of asyncio for simplicity
 
 Usage:
   python ws_bridge.py
@@ -15,7 +15,6 @@ Usage:
 Then point XMRig to: stratum+tcp://127.0.0.1:3333
 """
 
-import asyncio
 import json
 import sys
 import os
@@ -23,15 +22,19 @@ import hashlib
 import platform
 import time
 import subprocess
+import socket
+import threading
+import select
+import queue
 
 try:
-    import websockets
+    import websocket
 except ImportError:
-    print("Installing websockets...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "websockets"], check=True)
-    import websockets
+    print("Installing websocket-client...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "websocket-client"], check=True)
+    import websocket
 
-BRIDGE_VERSION = "4.0.0"
+BRIDGE_VERSION = "4.1.0"
 
 # Temperature thresholds (Celsius)
 TEMP_THROTTLE = 80
@@ -43,9 +46,14 @@ TEMP_RESUME = 70
 # =============================================================================
 ws_connection = None           # WebSocket to proxy
 ws_connected = False           # Is WebSocket connected?
+ws_lock = threading.Lock()     # Thread-safe access
 current_job = None             # Current mining job from pool
-stratum_writers = {}           # {client_id: writer} - Connected XMRig instances
+current_job_lock = threading.Lock()
+xmrig_clients = {}             # {client_id: socket} - Connected XMRig instances
+xmrig_lock = threading.Lock()
+outgoing_queue = queue.Queue()  # Messages to send to proxy
 pending_shares = []            # Shares waiting to be sent when WS reconnects
+pending_lock = threading.Lock()
 client_counter = 0
 
 # Stats
@@ -53,12 +61,14 @@ current_hashrate = 0.0
 current_temp = None
 current_difficulty = 1000
 share_times = []               # For hashrate estimation
+share_times_lock = threading.Lock()
 total_shares_submitted = 0
 total_shares_accepted = 0
 
 # Control flags
 mining_paused = False
 pool_suspended = False
+running = True
 
 # =============================================================================
 # CLIENT ID
@@ -88,7 +98,6 @@ LOCAL_PORT = 3333
 def get_cpu_temp():
     """Get CPU temperature (Windows)"""
     if platform.system() != "Windows":
-        # Linux
         try:
             with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
                 return int(f.read().strip()) / 1000.0
@@ -96,13 +105,9 @@ def get_cpu_temp():
             pass
         return None
     
-    # Windows - try multiple methods
     methods = [
-        # Method 1: WMI thermal zone
         'Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace "root/wmi" 2>$null | Select-Object -ExpandProperty CurrentTemperature -First 1',
-        # Method 2: Open Hardware Monitor
         'Get-WmiObject -Namespace "root/OpenHardwareMonitor" -Class Sensor 2>$null | Where-Object {$_.SensorType -eq "Temperature" -and $_.Name -match "CPU"} | Select-Object -ExpandProperty Value -First 1',
-        # Method 3: LibreHardwareMonitor
         'Get-WmiObject -Namespace "root/LibreHardwareMonitor" -Class Sensor 2>$null | Where-Object {$_.SensorType -eq "Temperature" -and $_.Name -match "CPU"} | Select-Object -ExpandProperty Value -First 1',
     ]
     
@@ -114,7 +119,6 @@ def get_cpu_temp():
             )
             if result.returncode == 0 and result.stdout.strip():
                 val = float(result.stdout.strip().split('\n')[0])
-                # WMI returns tenths of Kelvin
                 if val > 1000:
                     val = val / 10 - 273.15
                 if 0 < val < 120:
@@ -130,17 +134,16 @@ def update_hashrate():
     """Estimate hashrate from share submission rate"""
     global current_hashrate, share_times
     now = time.time()
-    # Keep last 60 seconds of shares
-    share_times = [t for t in share_times if now - t < 60]
-    
-    if len(share_times) >= 2:
-        time_span = now - share_times[0]
-        if time_span > 0:
-            shares_per_sec = len(share_times) / time_span
-            current_hashrate = shares_per_sec * current_difficulty
-    elif len(share_times) == 1 and (now - share_times[0]) > 5:
-        # Single share - rough estimate
-        current_hashrate = current_difficulty / (now - share_times[0])
+    with share_times_lock:
+        share_times = [t for t in share_times if now - t < 60]
+        
+        if len(share_times) >= 2:
+            time_span = now - share_times[0]
+            if time_span > 0:
+                shares_per_sec = len(share_times) / time_span
+                current_hashrate = shares_per_sec * current_difficulty
+        elif len(share_times) == 1 and (now - share_times[0]) > 5:
+            current_hashrate = current_difficulty / (now - share_times[0])
     
     return current_hashrate
 
@@ -155,243 +158,314 @@ def target_to_difficulty(target):
     return int(0xFFFFFFFF / target_value)
 
 # =============================================================================
-# WEBSOCKET TO PROXY (runs in background, reconnects automatically)
+# WEBSOCKET CALLBACKS
 # =============================================================================
-async def websocket_manager():
-    """Manages WebSocket connection to proxy - reconnects automatically"""
-    global ws_connection, ws_connected, current_job, current_difficulty
-    global mining_paused, pool_suspended, pending_shares, total_shares_accepted
+def on_ws_message(ws, message):
+    """Handle message from proxy"""
+    global current_job, current_difficulty, mining_paused, pool_suspended, total_shares_accepted
     
-    while True:
-        try:
-            print(f"[WS] Connecting to proxy...")
-            async with websockets.connect(
-                PROXY_WS_URL,
-                ping_interval=15,
-                ping_timeout=30,
-                close_timeout=5,
-            ) as ws:
-                ws_connection = ws
-                ws_connected = True
-                print(f"[WS] ✓ Connected to proxy!")
-                
-                # Send auth
-                await ws.send(json.dumps({'type': 'auth', 'params': {}}))
-                
-                # Send any pending shares
-                while pending_shares:
-                    share = pending_shares.pop(0)
-                    try:
-                        await ws.send(json.dumps(share))
-                        print(f"[WS] Sent queued share")
-                    except:
-                        pending_shares.insert(0, share)
-                        break
-                
-                # Listen for messages
-                async for message in ws:
-                    try:
-                        msg = json.loads(message)
-                        msg_type = msg.get('type')
-                        
-                        if msg_type == 'authed':
-                            print("[WS] Authenticated")
-                            
-                        elif msg_type == 'job':
-                            job = msg.get('params', {})
-                            current_job = job
-                            target = job.get('target', '')
-                            if target:
-                                current_difficulty = target_to_difficulty(target)
-                            print(f"[WS] New job (diff: {current_difficulty})")
-                            # Broadcast to all XMRig instances
-                            await broadcast_job(job)
-                            
-                        elif msg_type == 'hash_accepted':
-                            total_shares_accepted += 1
-                            print(f"[WS] ✓ Share accepted by pool!")
-                            
-                        elif msg_type == 'share_result':
-                            status = msg.get('status', '')
-                            if status == 'submitted':
-                                print(f"[WS] Share submitted")
-                            elif status == 'error':
-                                print(f"[WS] Share error: {msg.get('reason')}")
-                        
-                        elif msg_type == 'pong':
-                            pass  # Keepalive response
-                            
-                        elif msg_type == 'command':
-                            action = msg.get('action', '')
-                            if action in ('stop', 'pause'):
-                                mining_paused = True
-                                pool_suspended = (action == 'stop')
-                                print(f"[WS] ⏸ Mining paused: {msg.get('reason', '')}")
-                            elif action in ('start', 'resume'):
-                                mining_paused = False
-                                pool_suspended = False
-                                print(f"[WS] ▶ Mining resumed")
-                            elif action == 'kick':
-                                print(f"[WS] Kicked by server")
-                                sys.exit(0)
-                                
-                    except json.JSONDecodeError:
-                        pass
-                        
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            ws_connected = False
-            ws_connection = None
-            print(f"[WS] Disconnected: {e}")
+    try:
+        msg = json.loads(message)
+        msg_type = msg.get('type')
         
+        if msg_type == 'authed':
+            print("[WS] Authenticated")
+            
+        elif msg_type == 'job':
+            job = msg.get('params', {})
+            with current_job_lock:
+                current_job = job
+            target = job.get('target', '')
+            if target:
+                current_difficulty = target_to_difficulty(target)
+            print(f"[WS] New job (diff: {current_difficulty})")
+            broadcast_job(job)
+            
+        elif msg_type == 'hash_accepted':
+            total_shares_accepted += 1
+            print(f"[WS] ✓ Share accepted by pool!")
+            
+        elif msg_type == 'share_result':
+            status = msg.get('status', '')
+            if status == 'submitted':
+                print(f"[WS] Share submitted")
+            elif status == 'error':
+                print(f"[WS] Share error: {msg.get('reason')}")
+        
+        elif msg_type == 'pong':
+            pass  # Keepalive response
+            
+        elif msg_type == 'command':
+            action = msg.get('action', '')
+            if action in ('stop', 'pause'):
+                mining_paused = True
+                pool_suspended = (action == 'stop')
+                print(f"[WS] ⏸ Mining paused: {msg.get('reason', '')}")
+            elif action in ('start', 'resume'):
+                mining_paused = False
+                pool_suspended = False
+                print(f"[WS] ▶ Mining resumed")
+            elif action == 'kick':
+                print(f"[WS] Kicked by server")
+                os._exit(0)
+                
+    except json.JSONDecodeError:
+        pass
+
+def on_ws_error(ws, error):
+    """Handle WebSocket error"""
+    print(f"[WS] Error: {error}")
+
+def on_ws_close(ws, close_status_code, close_msg):
+    """Handle WebSocket close"""
+    global ws_connected, ws_connection
+    with ws_lock:
         ws_connected = False
         ws_connection = None
-        print(f"[WS] Reconnecting in 3 seconds...")
-        await asyncio.sleep(3)
+    print(f"[WS] Connection closed")
 
-async def send_to_proxy(msg):
-    """Send a message to proxy, queue if disconnected"""
-    global pending_shares
-    if ws_connected and ws_connection:
+def on_ws_open(ws):
+    """Handle WebSocket open"""
+    global ws_connected, ws_connection
+    with ws_lock:
+        ws_connected = True
+        ws_connection = ws
+    print(f"[WS] ✓ Connected to proxy!")
+    
+    # Send auth
+    ws.send(json.dumps({'type': 'auth', 'params': {}}))
+    
+    # Send any pending shares
+    with pending_lock:
+        while pending_shares:
+            share = pending_shares.pop(0)
+            try:
+                ws.send(json.dumps(share))
+                print(f"[WS] Sent queued share")
+            except:
+                pending_shares.insert(0, share)
+                break
+
+# =============================================================================
+# WEBSOCKET MANAGER THREAD
+# =============================================================================
+def websocket_thread():
+    """Background thread managing WebSocket connection"""
+    global running
+    
+    while running:
         try:
-            await ws_connection.send(json.dumps(msg))
-            return True
-        except:
-            pass
+            print(f"[WS] Connecting to proxy...")
+            ws = websocket.WebSocketApp(
+                PROXY_WS_URL,
+                on_open=on_ws_open,
+                on_message=on_ws_message,
+                on_error=on_ws_error,
+                on_close=on_ws_close
+            )
+            ws.run_forever(ping_interval=10, ping_timeout=20)
+        except Exception as e:
+            print(f"[WS] Error: {e}")
+        
+        if running:
+            print(f"[WS] Reconnecting in 3 seconds...")
+            time.sleep(3)
+
+# =============================================================================
+# SEND TO PROXY
+# =============================================================================
+def send_to_proxy(msg):
+    """Send a message to proxy, queue if disconnected"""
+    with ws_lock:
+        if ws_connected and ws_connection:
+            try:
+                ws_connection.send(json.dumps(msg))
+                return True
+            except:
+                pass
+    
     # Queue for later
     if msg.get('type') == 'submit':
-        pending_shares.append(msg)
+        with pending_lock:
+            pending_shares.append(msg)
         print(f"[WS] Share queued (WS disconnected)")
     return False
 
 # =============================================================================
-# LOCAL STRATUM SERVER (always running, never disconnects)
+# BROADCAST JOB TO XMRIG CLIENTS
 # =============================================================================
-async def handle_xmrig(reader, writer):
-    """Handle XMRig connection - stays connected regardless of WebSocket status"""
-    global client_counter, share_times, total_shares_submitted
+def broadcast_job(job):
+    """Send new job to all connected XMRig instances"""
+    msg = json.dumps({
+        'jsonrpc': '2.0',
+        'method': 'job',
+        'params': job
+    }) + '\n'
+    data = msg.encode()
     
-    client_counter += 1
-    cid = client_counter
-    addr = writer.get_extra_info('peername')
-    print(f"[Stratum] XMRig #{cid} connected from {addr}")
-    
-    stratum_writers[cid] = writer
-    
-    try:
-        while True:
-            data = await reader.readline()
-            if not data:
-                break
-            
-            line = data.decode().strip()
-            if not line:
-                continue
-            
+    with xmrig_lock:
+        dead_clients = []
+        for cid, sock in xmrig_clients.items():
             try:
-                msg = json.loads(line)
-                method = msg.get('method')
-                msg_id = msg.get('id')
+                sock.sendall(data)
+            except:
+                dead_clients.append(cid)
+        for cid in dead_clients:
+            del xmrig_clients[cid]
+
+# =============================================================================
+# XMRIG CLIENT HANDLER
+# =============================================================================
+def handle_xmrig_client(client_sock, client_addr, cid):
+    """Handle a single XMRig connection"""
+    global total_shares_submitted
+    
+    print(f"[Stratum] XMRig #{cid} connected from {client_addr}")
+    
+    with xmrig_lock:
+        xmrig_clients[cid] = client_sock
+    
+    buffer = b''
+    try:
+        while running:
+            try:
+                readable, _, _ = select.select([client_sock], [], [], 1.0)
+                if not readable:
+                    continue
                 
-                if method == 'login':
-                    # Send job (or placeholder if no job yet)
-                    job = current_job or {
-                        'job_id': 'waiting',
-                        'blob': '0' * 152,
-                        'target': '00000000',
-                        'seed_hash': '0' * 64,
-                        'height': 0,
-                        'algo': 'rx/0'
-                    }
-                    response = {
-                        'id': msg_id,
-                        'jsonrpc': '2.0',
-                        'result': {
-                            'id': f'xmrig-{cid}',
-                            'job': job,
-                            'status': 'OK'
-                        },
-                        'error': None
-                    }
-                    writer.write((json.dumps(response) + '\n').encode())
-                    await writer.drain()
-                    print(f"[Stratum] #{cid} logged in")
+                data = client_sock.recv(4096)
+                if not data:
+                    break
+                
+                buffer += data
+                while b'\n' in buffer:
+                    line, buffer = buffer.split(b'\n', 1)
+                    line = line.decode().strip()
+                    if not line:
+                        continue
                     
-                elif method == 'submit':
-                    # Record share for hashrate
-                    share_times.append(time.time())
-                    total_shares_submitted += 1
-                    update_hashrate()
-                    
-                    # Forward to proxy
-                    ws_msg = {
-                        'type': 'submit',
-                        'params': msg.get('params', {})
-                    }
-                    await send_to_proxy(ws_msg)
-                    
-                    # Always tell XMRig it's OK (proxy will validate)
-                    response = {
-                        'id': msg_id,
-                        'jsonrpc': '2.0',
-                        'result': {'status': 'OK'},
-                        'error': None
-                    }
-                    writer.write((json.dumps(response) + '\n').encode())
-                    await writer.drain()
-                    
-                elif method == 'keepalived':
-                    response = {
-                        'id': msg_id,
-                        'jsonrpc': '2.0',
-                        'result': {'status': 'KEEPALIVED'},
-                        'error': None
-                    }
-                    writer.write((json.dumps(response) + '\n').encode())
-                    await writer.drain()
-                    
-            except json.JSONDecodeError:
-                pass
+                    try:
+                        msg = json.loads(line)
+                        method = msg.get('method')
+                        msg_id = msg.get('id')
+                        
+                        if method == 'login':
+                            with current_job_lock:
+                                job = current_job or {
+                                    'job_id': 'waiting',
+                                    'blob': '0' * 152,
+                                    'target': '00000000',
+                                    'seed_hash': '0' * 64,
+                                    'height': 0,
+                                    'algo': 'rx/0'
+                                }
+                            response = json.dumps({
+                                'id': msg_id,
+                                'jsonrpc': '2.0',
+                                'result': {
+                                    'id': f'xmrig-{cid}',
+                                    'job': job,
+                                    'status': 'OK'
+                                },
+                                'error': None
+                            }) + '\n'
+                            client_sock.sendall(response.encode())
+                            print(f"[Stratum] #{cid} logged in")
+                            
+                        elif method == 'submit':
+                            with share_times_lock:
+                                share_times.append(time.time())
+                            total_shares_submitted += 1
+                            update_hashrate()
+                            
+                            ws_msg = {
+                                'type': 'submit',
+                                'params': msg.get('params', {})
+                            }
+                            send_to_proxy(ws_msg)
+                            
+                            response = json.dumps({
+                                'id': msg_id,
+                                'jsonrpc': '2.0',
+                                'result': {'status': 'OK'},
+                                'error': None
+                            }) + '\n'
+                            client_sock.sendall(response.encode())
+                            
+                        elif method == 'keepalived':
+                            response = json.dumps({
+                                'id': msg_id,
+                                'jsonrpc': '2.0',
+                                'result': {'status': 'KEEPALIVED'},
+                                'error': None
+                            }) + '\n'
+                            client_sock.sendall(response.encode())
+                            
+                    except json.JSONDecodeError:
+                        pass
+                        
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[Stratum] #{cid} error: {e}")
+                break
                 
     except Exception as e:
         print(f"[Stratum] #{cid} error: {e}")
     finally:
-        del stratum_writers[cid]
-        writer.close()
-        print(f"[Stratum] #{cid} disconnected")
-
-async def broadcast_job(job):
-    """Send new job to all connected XMRig instances"""
-    msg = {
-        'jsonrpc': '2.0',
-        'method': 'job',
-        'params': job
-    }
-    data = (json.dumps(msg) + '\n').encode()
-    
-    for cid, writer in list(stratum_writers.items()):
+        with xmrig_lock:
+            if cid in xmrig_clients:
+                del xmrig_clients[cid]
         try:
-            writer.write(data)
-            await writer.drain()
+            client_sock.close()
         except:
             pass
+        print(f"[Stratum] #{cid} disconnected")
 
 # =============================================================================
-# STATUS UPDATER (sends temp/hashrate to proxy periodically)
+# STRATUM SERVER THREAD
 # =============================================================================
-async def status_updater():
-    """Send status updates to proxy every 10 seconds"""
-    global current_temp
+def stratum_server_thread():
+    """Local stratum server that XMRig connects to"""
+    global client_counter, running
     
-    while True:
-        await asyncio.sleep(10)
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind(('127.0.0.1', LOCAL_PORT))
+    server_sock.listen(5)
+    server_sock.settimeout(1.0)
+    
+    print(f"[Stratum] Server listening on 127.0.0.1:{LOCAL_PORT}")
+    
+    while running:
+        try:
+            client_sock, client_addr = server_sock.accept()
+            client_sock.settimeout(30)
+            client_counter += 1
+            cid = client_counter
+            
+            t = threading.Thread(target=handle_xmrig_client, args=(client_sock, client_addr, cid), daemon=True)
+            t.start()
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"[Stratum] Accept error: {e}")
+    
+    server_sock.close()
+
+# =============================================================================
+# STATUS UPDATER THREAD
+# =============================================================================
+def status_updater_thread():
+    """Send status updates to proxy every 10 seconds"""
+    global current_temp, running
+    
+    while running:
+        time.sleep(10)
         
-        # Update temp
         current_temp = get_cpu_temp()
         update_hashrate()
         
-        # Determine status
         if pool_suspended:
             status = "pool-suspended"
         elif mining_paused:
@@ -403,41 +477,41 @@ async def status_updater():
         else:
             status = "mining"
         
-        # Send to proxy
-        if ws_connected and ws_connection:
-            try:
-                await ws_connection.send(json.dumps({
-                    'type': 'status_update',
-                    'params': {
-                        'status': status,
-                        'temperature': current_temp,
-                        'hashrate': current_hashrate,
-                        'activeClients': len(stratum_writers),
-                        'pendingShares': len(pending_shares),
-                        'totalSubmitted': total_shares_submitted,
-                        'version': BRIDGE_VERSION
-                    }
-                }))
-            except:
-                pass
+        with xmrig_lock:
+            active_clients = len(xmrig_clients)
+        with pending_lock:
+            pending_count = len(pending_shares)
+        
+        send_to_proxy({
+            'type': 'status_update',
+            'params': {
+                'status': status,
+                'temperature': current_temp,
+                'hashrate': current_hashrate,
+                'activeClients': active_clients,
+                'pendingShares': pending_count,
+                'totalSubmitted': total_shares_submitted,
+                'version': BRIDGE_VERSION
+            }
+        })
 
 # =============================================================================
-# KEEPALIVE PINGER
+# KEEPALIVE PINGER THREAD
 # =============================================================================
-async def keepalive_pinger():
-    """Send ping to proxy every 10 seconds to keep connection alive"""
-    while True:
-        await asyncio.sleep(10)
-        if ws_connected and ws_connection:
-            try:
-                await ws_connection.send(json.dumps({'type': 'ping'}))
-            except:
-                pass
+def keepalive_thread():
+    """Send ping to proxy every 10 seconds"""
+    global running
+    
+    while running:
+        time.sleep(10)
+        send_to_proxy({'type': 'ping'})
 
 # =============================================================================
 # MAIN
 # =============================================================================
-async def main():
+def main():
+    global running
+    
     print("=" * 60)
     print(f"  WebSocket-to-Stratum Bridge v{BRIDGE_VERSION}")
     print("=" * 60)
@@ -450,32 +524,26 @@ async def main():
     print("  WebSocket to proxy reconnects automatically in background")
     print()
     
-    # Start local stratum server (always running)
-    stratum_server = await asyncio.start_server(
-        handle_xmrig,
-        '127.0.0.1',
-        LOCAL_PORT
-    )
-    print(f"[Stratum] Server listening on 127.0.0.1:{LOCAL_PORT}")
-    
-    # Start background tasks
-    tasks = [
-        asyncio.create_task(websocket_manager()),
-        asyncio.create_task(status_updater()),
-        asyncio.create_task(keepalive_pinger()),
+    threads = [
+        threading.Thread(target=stratum_server_thread, daemon=True),
+        threading.Thread(target=websocket_thread, daemon=True),
+        threading.Thread(target=status_updater_thread, daemon=True),
+        threading.Thread(target=keepalive_thread, daemon=True),
     ]
     
-    async with stratum_server:
-        try:
-            await asyncio.gather(stratum_server.serve_forever(), *tasks)
-        except asyncio.CancelledError:
-            pass
+    for t in threads:
+        t.start()
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[Bridge] Shutting down...")
+        running = False
+        time.sleep(1)
 
 if __name__ == '__main__':
     print()
     print(f"[Bridge v{BRIDGE_VERSION}] Starting...")
     print()
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n[Bridge] Shutting down...")
+    main()

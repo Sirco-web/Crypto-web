@@ -14,8 +14,8 @@ const path = require('path');
 // =============================================================================
 // VERSION - Update this when making changes!
 // =============================================================================
-const SERVER_VERSION = '4.4.1';
-const VERSION_DATE = '2025-12-30';
+const SERVER_VERSION = '4.4.2';
+const VERSION_DATE = '2025-12-29';
 
 // =============================================================================
 // ACTIVITY LOG - Track shares, blocks, events
